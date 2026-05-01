@@ -466,6 +466,7 @@ def parse_bbduk_log(filehandle) -> dict:
         "entropy":                 None,
         "entropy_window":          None,
         "entropy_k":               None,
+        "ref":                     None,
         "input_reads":             None,
         "input_bases":             None,
         "contaminant_reads":       None,
@@ -517,6 +518,12 @@ def parse_bbduk_log(filehandle) -> dict:
                         data[field] = cast(m.group(1))
                     except ValueError:
                         log.warning("Could not parse %s value: %r", param, m.group(1))
+            continue
+
+        # ref databases from wrapper "parsed argument:  ref=..." line
+        m = re.match(r"^parsed argument:\s+ref=(\S+)", content)
+        if m:
+            data["ref"] = m.group(1).strip()
             continue
 
         # Input
@@ -774,7 +781,7 @@ def load_bbduk_to_db(conn, data: dict) -> None:
             """
             INSERT INTO bbduk_low_complexity (
                 source_file, libid, run_date, flowcell, pipeline_version, pipeline_hash,
-                read_type, bbduk_version, entropy, entropy_window, entropy_k,
+                read_type, bbduk_version, entropy, entropy_window, entropy_k, ref,
                 input_reads, input_bases,
                 contaminant_reads, contaminant_reads_pct, contaminant_bases, contaminant_bases_pct,
                 low_entropy_reads, low_entropy_reads_pct, low_entropy_bases, low_entropy_bases_pct,
@@ -783,7 +790,7 @@ def load_bbduk_to_db(conn, data: dict) -> None:
                 processing_time_seconds
             ) VALUES (
                 %s,%s,%s,%s,%s,%s,
-                %s,%s,%s,%s,%s,
+                %s,%s,%s,%s,%s,%s,
                 %s,%s,
                 %s,%s,%s,%s,
                 %s,%s,%s,%s,
@@ -806,6 +813,7 @@ def load_bbduk_to_db(conn, data: dict) -> None:
                 data.get("entropy"),
                 data.get("entropy_window"),
                 data.get("entropy_k"),
+                data.get("ref"),
                 data.get("input_reads"),
                 data.get("input_bases"),
                 data.get("contaminant_reads"),
