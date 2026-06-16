@@ -1,12 +1,24 @@
+from decimal import Decimal
+from unittest import result
+import psycopg
+from psycopg.rows import dict_row
+import sys
+from typing import Any, Iterable
+from psycopg2.extras import RealDictCursor
+from psycopg2 import sql
+from curses import meta
+from fileinput import filename
+import hashlib
 import io
 import re
 import glob
 import logging
 import argparse
+import uuid
 import zipfile
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
-
+import json
 import psycopg2
 from psycopg2.extras import execute_values
 
@@ -16,15 +28,429 @@ logging.basicConfig(
 )
 log = logging.getLogger(__name__)
 
+def normalize_value(value):
+        if isinstance(value, float):
+            return Decimal(str(value))
+        return value
+
+class QCDatabaseLoader:
+    FASTQC_CHILD_TABLES = [
+        "fastqc_module_status",
+        "fastqc_per_base_quality",
+        "fastqc_per_tile_quality",
+        "fastqc_per_sequence_quality",
+        "fastqc_per_base_sequence_content",
+        "fastqc_per_sequence_gc_content",
+        "fastqc_per_base_n_content",
+        "fastqc_sequence_length_distribution",
+        "fastqc_sequence_duplication_levels",
+        "fastqc_overrepresented_sequences",
+        "fastqc_kmer_content",
+        "fastqc_adapter_content",
+    ]
+
+    def __init__(self, conn):
+        self.conn = conn
+        
+    def get_constraint_columns(
+        self,
+        table_name: str,
+        constraint_name: str = None,
+        schema_name: str = "qc",
+        key_type: str = "PRIMARY KEY",
+    ) -> tuple[str, ...]:
+        with self.conn.cursor() as cur:
+
+            if constraint_name:
+                query = sql.SQL("""
+                    SELECT kcu.column_name
+                    FROM information_schema.table_constraints tc
+                    JOIN information_schema.key_column_usage kcu
+                    ON tc.constraint_schema = kcu.constraint_schema
+                    AND tc.constraint_name = kcu.constraint_name
+                    AND tc.table_schema = kcu.table_schema
+                    AND tc.table_name = kcu.table_name
+                    WHERE tc.table_schema = %s
+                    AND tc.table_name = %s
+                    AND tc.constraint_name = %s
+                    AND tc.constraint_type = %s
+                    ORDER BY kcu.ordinal_position
+                """)
+                cur.execute(query, (schema_name, table_name, constraint_name, key_type))
+                
+            else:
+                query = sql.SQL("""
+                    SELECT kcu.column_name
+                    FROM information_schema.table_constraints tc
+                    JOIN information_schema.key_column_usage kcu
+                    ON tc.constraint_schema = kcu.constraint_schema
+                    AND tc.constraint_name = kcu.constraint_name
+                    AND tc.table_schema = kcu.table_schema
+                    AND tc.table_name = kcu.table_name
+                    WHERE tc.table_schema = %s
+                    AND tc.table_name = %s
+                    AND tc.constraint_type = %s
+                    ORDER BY kcu.ordinal_position
+                """)
+                cur.execute(query, (schema_name, table_name, key_type))
+                
+
+            columns = tuple(row[0] for row in cur.fetchall())
+
+        if not columns:
+            raise ValueError(
+                f"No {key_type} constraint found: "
+                f"{schema_name}.{table_name}.{constraint_name}"
+            )
+
+        return columns
+    
+    
+    def get_fk_columns(
+        self,
+        table_name: str,
+        constraint_name: str,
+        schema_name: str = "qc",
+    ) -> tuple[str, ...]:
+        with self.conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT kcu.column_name
+                FROM information_schema.table_constraints tc
+                JOIN information_schema.key_column_usage kcu
+                ON tc.constraint_schema = kcu.constraint_schema
+                AND tc.constraint_name = kcu.constraint_name
+                AND tc.table_schema = kcu.table_schema
+                AND tc.table_name = kcu.table_name
+                WHERE tc.table_schema = %s
+                AND tc.table_name = %s
+                AND tc.constraint_name = %s
+                AND tc.constraint_type = 'FOREIGN KEY'
+                ORDER BY kcu.ordinal_position
+                """,
+                (schema_name, table_name, constraint_name),
+            )
+
+            columns = tuple(row[0] for row in cur.fetchall())
+
+        if not columns:
+            raise ValueError(
+                f"No FOREIGN KEY constraint found: "
+                f"{schema_name}.{table_name}.{constraint_name}"
+            )
+
+        return columns
+    
+    def diff_rows(
+        self,
+            old_row: dict[str, Any],
+            new_row: dict[str, Any],
+            ignore_columns: Iterable[str] = (),
+        ) -> dict[str, dict[str, Any]]:
+            ignored = set(ignore_columns)
+            changes = {}
+
+            for key, new_value in new_row.items():
+                if key in ignored:
+                    continue
+                
+                old_value = normalize_value(old_row.get(key))
+                new_value = normalize_value(new_value)
+
+                if isinstance(old_value, Decimal) and isinstance(new_value, Decimal):
+                    if old_value.is_nan() and new_value.is_nan():
+                        return changes                
+
+                if old_value != new_value:
+                    changes[key] = {
+                        "old": old_value,
+                        "new": new_value,
+                    }
+
+            return changes
+    
+    def upsert_row(self,
+        table_name: str,
+        pk_columns: list[str],
+        row: dict[str, Any],
+        returning_columns: list[str] = None,
+        log_all = True
+    ) -> None:
+        """
+        Upsert one row into PostgreSQL.
+
+        If row exists, compare old vs new values.
+        If any non-PK values changed, log the changes and overwrite the row.
+        """
+
+        if not returning_columns:
+            returning_columns = pk_columns
+
+
+        if not row:
+            raise ValueError("Cannot upsert an empty row")
+
+        columns = list(row.keys())
+        non_pk_columns = [col for col in columns if col not in pk_columns]
+
+        where_pk = " AND ".join([f"{col} = %({col})s" for col in pk_columns])
+        
+        with self.conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute(
+                f"""
+                SELECT {", ".join(columns)}
+                FROM {table_name}
+                WHERE {where_pk}
+                """,
+                row,
+            )
+            
+            existing = cur.fetchone()
+
+            if existing:
+                changes = self.diff_rows(existing, row, ignore_columns=pk_columns + tuple(["smdb_upload_uuid"]))
+
+                if changes:
+                    log.warning(
+                        "Updating %s: changes=%s",
+                        table_name,
+                        json.dumps(changes, default=str),
+                    )
+                else:
+                    if log_all:
+                        log.warning(
+                            "Row is exact duplicate of row in %s, no changes made",
+                            table_name
+                        )
+
+                    
+            
+
+            update_assignments = ", ".join(
+                [f"{col} = EXCLUDED.{col}" for col in set(non_pk_columns) - {'smdb_upload_uuid'}]
+            )
+
+            insert_cols = ", ".join(columns)
+            insert_placeholders = ", ".join([f"%({col})s" for col in columns])
+            conflict_cols = ", ".join(pk_columns)
+        
+            cur.execute(
+                f"""
+                INSERT INTO {table_name} ({insert_cols})
+                VALUES ({insert_placeholders})
+                ON CONFLICT ({conflict_cols})
+                DO UPDATE SET {update_assignments}
+                returning {", ".join(returning_columns)}
+                """,
+                row,
+            )
+            return cur.fetchone()
+
+
+    def load_metadata(self, data: dict) -> int | None:  
+        unique_key_columns = self.get_constraint_columns(
+            table_name="meta_data",
+            constraint_name="meta_data_pk",
+        )
+                
+        result = self.upsert_row(
+            table_name="meta_data",
+            pk_columns=unique_key_columns,
+            row=data,
+        )
+      
+
+        if result is None:
+            self.conn.rollback()
+
+            log.error(
+                "Upload failed due to unknown error for: %s",
+                data["source_path"],
+            )
+
+            return None
+
+        self.conn.commit()
+        
+        return result
+
+    def delete_fastqc_children(self, file_id: int) -> None:
+        with self.conn.cursor() as cur:
+            for table in self.FASTQC_CHILD_TABLES:
+                cur.execute(f"DELETE FROM {table} WHERE file_id = %s", (file_id,))
+                
+    def load_fastqc_data(self, data: dict) -> int | None:
+        bs = data["basic_statistics"]
+        
+        unique_key_columns = self.get_constraint_columns(
+            table_name="fastqc",
+            key_type="UNIQUE",
+            constraint_name="fastqc_files_unique",
+        )
+        
+        pk = self.get_constraint_columns(
+            table_name="fastqc")
+        
+        foreign_key_columns = self.get_constraint_columns(
+            table_name="fastqc",
+            constraint_name="fastqc_files_meta_data_fk",
+            key_type="FOREIGN KEY"
+        )
+        
+        meta_data = {
+            "filename": bs.get("Filename"),
+            "source_file": data["source_file"],
+            "file_type": bs.get("File type"),
+            "encoding": bs.get("Encoding"),
+            "total_sequences": int(bs["Total Sequences"]) if "Total Sequences" in bs else None,
+            "total_bases": bs.get("Total Bases"),
+            "poor_quality_sequences": int(bs["Sequences flagged as poor quality"]) if "Sequences flagged as poor quality" in bs else None,
+            "sequence_length": bs.get("Sequence length"),
+            "gc_percent": int(bs["%GC"]) if "%GC" in bs else None,
+            "library_id": data.get("library_id"),
+            "sequencing_date": data.get("sequencing_date"),
+            "flowcell_id": data.get("flowcell_id"),
+            "pipeline_version": data.get("pipeline_version"),
+            "pipeline_hash": data.get("pipeline_hash"),
+            "data_type": data.get("data_type"),
+            "lane": data.get("lane"),
+            "read_type": data.get("read_type"),
+            "fastqc_version": data.get("fastqc_version"),
+            "flowcell_position": data.get("flowcell_position"),
+        }
+
+        table_name = 'fastqc'
+        log.info(f'Upserting row(s) into {table_name}')
+        result = self.upsert_row(
+            row=meta_data,
+            table_name=table_name,
+            pk_columns=unique_key_columns,
+            returning_columns=["id"],
+        )
+        module_statuses = data.get("module_statuses")
+        module_statuses = [{'module_name': k, 'status': v} for k, v in module_statuses.items()]
+        data['module_statuses'] = module_statuses
+
+        child_data = {k: v for k, v in data.items() if k not in meta_data and k not in ["basic_statistics"]}
+        
+        for child_table, rows in child_data.items():
+            child_table = 'fastqc_' + child_table
+
+            constraint_name = f"{child_table}_unique"
+            
+            unique_key_columns = self.get_constraint_columns(
+                table_name=child_table,
+                key_type="UNIQUE",
+                constraint_name=constraint_name,
+            )
+
+            fk = pk
+            fk_col = self.get_constraint_columns(
+                table_name=child_table,
+                key_type="FOREIGN KEY",
+            )
+
+            
+            if len(fk) != 1 or len(fk_col) != 1:
+                self.conn.rollback()
+
+                log.error(
+                    "Expected exactly one PRIMARY KEY column and one FOREIGN KEY column for child table: %s. "
+                    "Got PK columns: %s, FK columns: %s",
+                    child_table,
+                    fk,
+                    fk_col,
+                )
+
+                return None
+        
+            dataset = None
+            if 'rows' in rows:
+                    dataset = rows
+                    rows = dataset.pop('rows')            
+
+            for row in rows:
+                if dataset:
+                    row.update(dataset)
+                
+                if row.get(fk_col[0]) is not None:
+                        self.conn.rollback()
+
+                        log.error("FK not expected here")
+
+                        return None
+                row[fk_col[0]] = result[pk[0]]
+                                  
+                sub_result = self.upsert_row(
+                    row=row,
+                    table_name=child_table,
+                    pk_columns=unique_key_columns,
+                    log_all=False,
+                )
+
+                if sub_result is None:
+                    self.conn.rollback()
+
+                    log.error(
+                        "Child table upload failed due to unknown error for: %s, table: %s",
+                        data["source_path"],
+                        child_table,
+                    )
+
+                    return None
+            
+        if result is None:
+            self.conn.rollback()
+
+            log.error(
+                "Metadata upsert unexpectedly returned no id: %s",
+                data["source_path"],
+            )
+
+            return None
+
+        self.conn.commit()
+
+
+
+        return result
+    
+                
+    def load_bbduk(self, data: dict) -> int | None:
+        unique_key_columns = self.get_constraint_columns(
+            table_name="meta_data",
+            constraint_name="meta_data_pk",
+        )
+                
+        result = self.upsert_row(
+            table_name="meta_data",
+            pk_columns=unique_key_columns,
+            row=data,
+        )
+      
+
+        if result is None:
+            self.conn.rollback()
+
+            log.error(
+                "Upload failed due to unknown error for: %s",
+                data["source_path"],
+            )
+
+            return None
+
+        self.conn.commit()
+        
+        return result
 
 # ---------------------------------------------------------------------------
 # Path metadata extraction
 # ---------------------------------------------------------------------------
 
-def extract_path_metadata(zip_path: str) -> dict:
+def extract_fastqc_path_metadata(zip_path: str) -> dict:
     """
     Expected structure:
-    /datasets/caeg_production/libraires/lv7/008/003/{libid}/{date}_{fc}/{version}/{hash}/
+    /datasets/caeg_production/libraires/lv7/008/003/{library_id}/{date}_{fc}/{version}/{hash}/
         stats/reads/fastqc/{data_type}/{filename}_fastqc.zip
 
     parts[0]  = '/'
@@ -34,7 +460,7 @@ def extract_path_metadata(zip_path: str) -> dict:
     parts[4]  = 'lv7'    \
     parts[5]  = '008'     } sharding dirs — ignored
     parts[6]  = '003'    /
-    parts[7]  = libid
+    parts[7]  = library_id
     parts[8]  = date_fc   e.g. '20231015_HV3TWDSX7'
     parts[9]  = version   e.g. 'v1.08'
     parts[10] = hash
@@ -49,12 +475,12 @@ def extract_path_metadata(zip_path: str) -> dict:
     if len(parts) != 16:
         log.warning(f"Path does not match expected depth (=16, got {len(parts)}): {zip_path}")
         return {
-            "libid": None, "run_date": None, "flowcell": None,
+            "library_id": None, "sequencing_date": None, "flowcell_id": None,
             "pipeline_version": None, "pipeline_hash": None,
             "data_type": None, "lane": None, "read_type": None
         }
 
-    libid            = parts[7]
+    library_id            = parts[7]
     date_fc          = parts[8]
     pipeline_version = parts[9]
     pipeline_hash    = parts[10]
@@ -62,24 +488,37 @@ def extract_path_metadata(zip_path: str) -> dict:
     filename         = parts[15]
 
     # Split 'date_fc' on the FIRST underscore only,
-    # since flowcell IDs can also contain underscores
-    date_str, _, flowcell = date_fc.partition("_")
+    # since flowcell_id IDs can also contain underscores
+    date_str, _, flowcell_id = date_fc.partition("_")
+    flowcell_position = flowcell_id[0] if flowcell_id else None
+    
+    if not len(flowcell_id) == 10:
+        log.warning(f"flowcell_id string does not match expected format (side + 9-char ID): '{flowcell_id}' in path: {zip_path}")
+        
+    elif not flowcell_position in ('B', 'A'):
+        log.warning(f"Sequencing side is not valid (should be 'B' or 'A'): '{flowcell_position}' in path: {zip_path}")
+        flowcell_position = None 
+    
+    else:
+        flowcell_id = flowcell_id[1:]
+
+    
     try:
-        run_date = datetime.strptime(date_str, "%Y%m%d").date()
+        sequencing_date = datetime.strptime(date_str, "%Y%m%d").date()
     except ValueError:
         log.warning(f"Could not parse date from '{date_str}' in path: {zip_path}")
-        run_date = None
+        sequencing_date = None
 
-    # Parse filename: Lib_{libid}_{lane}_{read_type}_fastqc.zip
+    # Parse filename: Lib_{library_id}_{lane}_{read_type}_fastqc.zip
     fname_match = re.match(
         r"^Lib_(?P<lib>[^_]+)_(?:(?P<lane>L\d+)_)?(?P<read_type>R1|R2|collapsed|collapsedtrunc|singleton)_fastqc\.zip$",
         filename
     )
     if fname_match:
         fname_libid = fname_match.group("lib")
-        if fname_libid != libid:
+        if fname_libid != library_id:
             log.warning(
-                f"LibID mismatch between path and filename: path={libid}, filename={fname_libid} ({zip_path})"
+                f"library_id mismatch between path and filename: path={library_id}, filename={fname_libid} ({zip_path})"
             )
 
         lane      = fname_match.group("lane")
@@ -93,31 +532,134 @@ def extract_path_metadata(zip_path: str) -> dict:
     else:
         log.warning(
             f"Filename does not follow expected format "
-            f"'Lib_{{libid}}_[{{lane}}_]{{read_type}}_fastqc.zip' "
+            f"'Lib_{{library_id}}_[{{lane}}_]{{read_type}}_fastqc.zip' "
             f"(valid read_type: R1, R2, collapsed, collapsedtrunc, singleton): {filename}"
         )
         lane      = None
         read_type = None
 
     return {
-        "libid":            libid,
-        "run_date":         run_date,
-        "flowcell":         flowcell,
+        "library_id":            library_id,
+        "sequencing_date":         sequencing_date,
+        "flowcell_id":         flowcell_id,
         "pipeline_version": pipeline_version,
         "pipeline_hash":    pipeline_hash,
         "data_type":        data_type,
         "lane":             lane,
         "read_type":        read_type,
+        "flowcell_position": flowcell_position,
     }
+    
+def validate_regex(
+    value: str | None,
+    pattern: str,
+    field_name: str,
+) -> None:
+    if value is None or not re.fullmatch(pattern, value):
+        log.error(f"{field_name} does not match pattern: {pattern}")
+        return False
+    else:
+        return True
 
+def extract_root_path_metadata(root_path: str) -> dict:
+    """
+    Expected structure:
+    /datasets/caeg_production/libraires/LVXXX/XXX/XXX/{library_id}/{date}_{fc}/{version}/{hash}
+
+    parts[0]  = '/'
+    parts[1]  = 'datasets'
+    parts[2]  = 'caeg_production'
+    parts[3]  = 'libraires'
+    parts[4]  = 'lv7'    \
+    parts[5]  = '008'     } sharding dirs — ignored
+    parts[6]  = '003'    /
+    parts[7]  = library_id
+    parts[8]  = date_fc   e.g. '20231015_HV3TWDSX7'
+    parts[9]  = version   e.g. 'v1.08'
+    parts[10] = hash
+    """
+    parts = Path(root_path).parts
+
+    if len(parts) != 11:
+            log.error(f"Path does not match expected depth (=11, got {len(parts)}): {root_path}")
+            return {
+            "library_id": None, "sequencing_date": None, "flowcell_id": None,
+            "pipeline_version": None, "pipeline_hash": None,
+        }
+
+    library_id       = parts[7]
+    date_fc          = parts[8]
+    pipeline_version = parts[9]
+    pipeline_hash    = parts[10]
+        
+
+    if not validate_regex(
+        library_id,
+        r"LV\d{10}",
+        "library_id",
+    ):
+        library_id = None
+
+    if not validate_regex(
+        pipeline_version,
+        r"v\d+\.\d+\.\d+",
+        "pipeline_version",
+    ):
+        pipeline_version = None
+
+    config_yaml = Path(root_path) / "config" / "config.yaml"
+    with open(config_yaml, "rb") as f:
+        test_digest = hashlib.file_digest(f, "md5").hexdigest()
+    
+    if test_digest != pipeline_hash:
+        log.error(f"Pipeline hash does not match expected value for config.yaml: {pipeline_hash} != {test_digest}")
+        pipeline_hash = None
+
+    # Split 'date_fc' on the FIRST underscore only,
+    # since flowcell_id IDs can also contain underscores
+    date_str, _, flowcell_id = date_fc.partition("_")
+    flowcell_position = flowcell_id[0] if flowcell_id else None
+    
+    if not len(flowcell_id) == 10:
+        log.error(f"flowcell_id string does not match expected format (flowcell position + 9-char ID): '{flowcell_id}' in path: {root_path}")
+        flowcell_id = None     
+    elif not flowcell_position in ('B', 'A'):
+        log.error(f"Flowcell position is not valid (should be 'B' or 'A'): '{flowcell_position}' in path: {root_path}")
+        flowcell_position = None
+        flowcell_id = None
+    else:
+        flowcell_id = flowcell_id[1:]
+        
+    if not validate_regex(
+        flowcell_id,
+        r"[A-Za-z0-9]{9}",
+        "flowcell_id"
+    ):
+        flowcell_id = None
+    
+    try:
+        sequencing_date = datetime.strptime(date_str, "%Y%m%d").date()
+    except ValueError:
+        log.warning(f"Could not parse date from '{date_str}' in path: {root_path}")
+        sequencing_date = None
+
+    return {
+        "source_path": root_path,
+        "library_id":            library_id,
+        "sequencing_date":         sequencing_date,
+        "flowcell_id":         flowcell_id,
+        "pipeline_version": pipeline_version,
+        "pipeline_hash":    pipeline_hash,
+        "flowcell_position": flowcell_position,
+    }
 
 def extract_log_path_metadata(log_path: str) -> dict:
     """
     Expected structure (15 parts):
-    /datasets/caeg_production/libraires/lv7/008/003/{libid}/{date}_{fc}/{version}/{hash}/
+    /datasets/caeg_production/libraires/lv7/008/003/{library_id}/{date}_{fc}/{version}/{hash}/
         logs/reads/low_complexity/{filename}.log
 
-    parts[7]  = libid
+    parts[7]  = library_id
     parts[8]  = date_fc   e.g. '20231015_HV3TWDSX7'
     parts[9]  = version   e.g. 'v1.08'
     parts[10] = hash
@@ -128,23 +670,23 @@ def extract_log_path_metadata(log_path: str) -> dict:
     if len(parts) != 15:
         log.warning(f"Log path does not match expected depth (=15, got {len(parts)}): {log_path}")
         return {
-            "libid": None, "run_date": None, "flowcell": None,
+            "library_id": None, "sequencing_date": None, "flowcell_id": None,
             "pipeline_version": None, "pipeline_hash": None,
-            "read_type": None,
+            "read_type": None, "flowcell_position": None
         }
 
-    libid            = parts[7]
+    library_id            = parts[7]
     date_fc          = parts[8]
     pipeline_version = parts[9]
     pipeline_hash    = parts[10]
     filename         = parts[14]
 
-    date_str, _, flowcell = date_fc.partition("_")
+    date_str, _, flowcell_id = date_fc.partition("_")
     try:
-        run_date = datetime.strptime(date_str, "%Y%m%d").date()
+        sequencing_date = datetime.strptime(date_str, "%Y%m%d").date()
     except ValueError:
         log.warning(f"Could not parse date from '{date_str}' in path: {log_path}")
-        run_date = None
+        sequencing_date = None
 
     fname_match = re.match(
         r"^Lib_(?P<lib>[^_]+)_(?:(?P<lane>L\d+)_)?(?P<read_type>R1|R2|collapsed|collapsedtrunc|singleton)\.log$",
@@ -152,23 +694,23 @@ def extract_log_path_metadata(log_path: str) -> dict:
     )
     if fname_match:
         fname_libid = fname_match.group("lib")
-        if fname_libid != libid:
+        if fname_libid != library_id:
             log.warning(
-                f"LibID mismatch between path and filename: path={libid}, filename={fname_libid} ({log_path})"
+                f"library_id mismatch between path and filename: path={library_id}, filename={fname_libid} ({log_path})"
             )
         read_type = fname_match.group("read_type")
     else:
         log.warning(
             f"Log filename does not follow expected format "
-            f"'Lib_{{libid}}_[{{lane}}_]{{read_type}}.log' "
+            f"'Lib_{{library_id}}_[{{lane}}_]{{read_type}}.log' "
             f"(valid read_type: R1, R2, collapsed, collapsedtrunc, singleton): {filename}"
         )
         read_type = None
 
     return {
-        "libid":            libid,
-        "run_date":         run_date,
-        "flowcell":         flowcell,
+        "library_id":            library_id,
+        "sequencing_date":         sequencing_date,
+        "flowcell_id":         flowcell_id,
         "pipeline_version": pipeline_version,
         "pipeline_hash":    pipeline_hash,
         "read_type":        read_type,
@@ -594,287 +1136,78 @@ def parse_bbduk_log(filehandle) -> dict:
 
     return data
 
+def validate_root_metadata(meta: dict, path: str) -> bool:
+    required = (
+        "library_id",
+        "sequencing_date",
+        "flowcell_id",
+        "pipeline_version",
+        "pipeline_hash",
+    )
 
-# ---------------------------------------------------------------------------
-# Database loading
-# ---------------------------------------------------------------------------
+    missing = [field for field in required if meta.get(field) is None]
 
-def load_to_db(conn, data: dict) -> None:
-    bs = data["basic_statistics"]
-
-    with conn.cursor() as cur:
-
-        # Insert file-level record (basic stats + path metadata)
-        cur.execute(
-    """
-    INSERT INTO fastqc_files
-    (filename, source_file, file_type, encoding, total_sequences,
-     total_bases, poor_quality_sequences, sequence_length, gc_percent,
-     libid, run_date, flowcell, pipeline_version, pipeline_hash,
-     data_type, lane, read_type, fastqc_version)
-VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
-    ON CONFLICT (source_file) DO NOTHING
-    RETURNING id
-    """,
-            (
-                bs.get("Filename"),
-                data["source_file"],
-                bs.get("File type"),
-                bs.get("Encoding"),
-                int(bs["Total Sequences"]) if "Total Sequences" in bs else None,
-                bs.get("Total Bases"),
-                int(bs["Sequences flagged as poor quality"]) if "Sequences flagged as poor quality" in bs else None,
-                bs.get("Sequence length"),
-                int(bs["%GC"]) if "%GC" in bs else None,
-                data.get("libid"),
-                data.get("run_date"),
-                data.get("flowcell"),
-                data.get("pipeline_version"),
-                data.get("pipeline_hash"),
-                data.get("data_type"),
-                data.get("lane"),
-                data.get("read_type"),
-                data.get("fastqc_version"),
-            ),
+    if missing:
+        log.error(
+            "Invalid root metadata for '%s'. Missing: %s",
+            path,
+            ", ".join(missing),
         )
-        result = cur.fetchone()
-        if result is None:
-            log.warning(f"Skipping duplicate: {data['source_file']}")
-            conn.rollback()
-            return
-        file_id = result[0]
+        return False
 
-        # Module statuses
-        if data["module_statuses"]:
-            execute_values(
-                cur,
-                "INSERT INTO fastqc_module_status (file_id, module_name, status) VALUES %s",
-                [(file_id, k, v) for k, v in data["module_statuses"].items()],
-            )
-
-        # Per-base quality
-        if data["per_base_quality"]:
-            execute_values(
-                cur,
-                """INSERT INTO fastqc_per_base_quality
-                   (file_id, base, mean, median, lower_quartile, upper_quartile,
-                    percentile_10, percentile_90) VALUES %s""",
-                [(file_id, r["base"], r["mean"], r["median"], r["lower_quartile"],
-                  r["upper_quartile"], r["percentile_10"], r["percentile_90"])
-                 for r in data["per_base_quality"]],
-            )
-
-        # Per-tile quality
-        if data["per_tile_quality"]:
-            execute_values(
-                cur,
-                "INSERT INTO fastqc_per_tile_quality (file_id, tile, base, mean) VALUES %s",
-                [(file_id, r["tile"], r["base"], r["mean"])
-                 for r in data["per_tile_quality"]],
-            )
-
-        # Per-sequence quality scores
-        if data["per_sequence_quality"]:
-            execute_values(
-                cur,
-                "INSERT INTO fastqc_per_sequence_quality (file_id, quality, count) VALUES %s",
-                [(file_id, r["quality"], r["count"])
-                 for r in data["per_sequence_quality"]],
-            )
-
-        # Per-base sequence content
-        if data["per_base_sequence_content"]:
-            execute_values(
-                cur,
-                """INSERT INTO fastqc_per_base_sequence_content
-                   (file_id, base, g, a, t, c) VALUES %s""",
-                [(file_id, r["base"], r["g"], r["a"], r["t"], r["c"])
-                 for r in data["per_base_sequence_content"]],
-            )
-
-        # Per-sequence GC content
-        if data["per_sequence_gc_content"]:
-            execute_values(
-                cur,
-                """INSERT INTO fastqc_per_sequence_gc_content
-                   (file_id, gc_content, count) VALUES %s""",
-                [(file_id, r["gc_content"], r["count"])
-                 for r in data["per_sequence_gc_content"]],
-            )
-
-        # Per-base N content
-        if data["per_base_n_content"]:
-            execute_values(
-                cur,
-                "INSERT INTO fastqc_per_base_n_content (file_id, base, n_count) VALUES %s",
-                [(file_id, r["base"], r["n_count"])
-                 for r in data["per_base_n_content"]],
-            )
-
-        # Sequence length distribution
-        if data["sequence_length_distribution"]:
-            execute_values(
-                cur,
-                """INSERT INTO fastqc_sequence_length_distribution
-                   (file_id, length, count) VALUES %s""",
-                [(file_id, r["length"], r["count"])
-                 for r in data["sequence_length_distribution"]],
-            )
-
-        # Sequence duplication levels
-        dup = data["sequence_duplication_levels"]
-        if dup["rows"]:
-            execute_values(
-                cur,
-                """INSERT INTO fastqc_sequence_duplication_levels
-                   (file_id, total_deduplicated_pct, duplication_level, percentage_of_total)
-                   VALUES %s""",
-                [(file_id, dup["total_deduplicated_pct"],
-                  r["duplication_level"], r["percentage_of_total"])
-                 for r in dup["rows"]],
-            )
-
-        # Adapter content
-        # Overrepresented sequences
-        if data["overrepresented_sequences"]:
-            execute_values(
-                cur,
-                """INSERT INTO fastqc_overrepresented_sequences
-                   (file_id, sequence, count, percentage, source)
-                   VALUES %s""",
-                [(file_id, r["sequence"], r["count"], r["percentage"], r["source"])
-                 for r in data["overrepresented_sequences"]],
-            )
-
-        # Kmer content
-        if data["kmer_content"]:
-            execute_values(
-                cur,
-                """INSERT INTO fastqc_kmer_content
-                   (file_id, sequence, count, obs_exp_max, obs_exp_max_at)
-                   VALUES %s""",
-                [(file_id, r["sequence"], r["count"], r["obs_exp_max"], r["obs_exp_max_at"])
-                 for r in data["kmer_content"]],
-            )
-
-        # Adapter content
-        if data["adapter_content"]:
-            execute_values(
-                cur,
-                """INSERT INTO fastqc_adapter_content
-                   (file_id, position, illumina_universal, illumina_small_rna_3,
-                    illumina_small_rna_5, nextera_transposase, poly_a, poly_g)
-                   VALUES %s""",
-                [(file_id, r["position"], r["illumina_universal"],
-                  r["illumina_small_rna_3"], r["illumina_small_rna_5"],
-                  r["nextera_transposase"], r["poly_a"], r["poly_g"])
-                 for r in data["adapter_content"]],
-            )
-
-    conn.commit()
-    log.info(f"Loaded as file_id={file_id}")
-
-
-def load_bbduk_to_db(conn, data: dict) -> None:
-    with conn.cursor() as cur:
-        cur.execute(
-            """
-            INSERT INTO bbduk_low_complexity (
-                source_file, libid, run_date, flowcell, pipeline_version, pipeline_hash,
-                read_type, bbduk_version, entropy, entropy_window, entropy_k, ref,
-                input_reads, input_bases,
-                contaminant_reads, contaminant_reads_pct, contaminant_bases, contaminant_bases_pct,
-                low_entropy_reads, low_entropy_reads_pct, low_entropy_bases, low_entropy_bases_pct,
-                total_removed_reads, total_removed_reads_pct, total_removed_bases, total_removed_bases_pct,
-                result_reads, result_reads_pct, result_bases, result_bases_pct,
-                processing_time_seconds
-            ) VALUES (
-                %s,%s,%s,%s,%s,%s,
-                %s,%s,%s,%s,%s,%s,
-                %s,%s,
-                %s,%s,%s,%s,
-                %s,%s,%s,%s,
-                %s,%s,%s,%s,
-                %s,%s,%s,%s,
-                %s
-            )
-            ON CONFLICT (source_file) DO NOTHING
-            RETURNING id
-            """,
-            (
-                data["source_file"],
-                data.get("libid"),
-                data.get("run_date"),
-                data.get("flowcell"),
-                data.get("pipeline_version"),
-                data.get("pipeline_hash"),
-                data.get("read_type"),
-                data.get("bbduk_version"),
-                data.get("entropy"),
-                data.get("entropy_window"),
-                data.get("entropy_k"),
-                data.get("ref"),
-                data.get("input_reads"),
-                data.get("input_bases"),
-                data.get("contaminant_reads"),
-                data.get("contaminant_reads_pct"),
-                data.get("contaminant_bases"),
-                data.get("contaminant_bases_pct"),
-                data.get("low_entropy_reads"),
-                data.get("low_entropy_reads_pct"),
-                data.get("low_entropy_bases"),
-                data.get("low_entropy_bases_pct"),
-                data.get("total_removed_reads"),
-                data.get("total_removed_reads_pct"),
-                data.get("total_removed_bases"),
-                data.get("total_removed_bases_pct"),
-                data.get("result_reads"),
-                data.get("result_reads_pct"),
-                data.get("result_bases"),
-                data.get("result_bases_pct"),
-                data.get("processing_time_seconds"),
-            ),
-        )
-        result = cur.fetchone()
-        if result is None:
-            log.warning(f"Skipping duplicate BBDuk log: {data['source_file']}")
-            conn.rollback()
-            return
-        row_id = result[0]
-
-    conn.commit()
-    log.info(f"BBDuk log loaded as id={row_id}: {data['source_file']}")
-
+    return True
 
 # ---------------------------------------------------------------------------
 # Orchestration
 # ---------------------------------------------------------------------------
 
 def mother(conn, librootfolder: str) -> None:
+    
+    
     """
     Orchestrate parsing and loading for all FastQC zip files and BBDuk
     low-complexity log files under a given library root folder.
     """
+
+    path = Path(librootfolder)
+
+    
+    root_path_meta = extract_root_path_metadata(librootfolder)
+    upload_uuid = str(uuid.uuid4())
+    log.info(f"SMDB upload ID for this batch: {upload_uuid}")
+    root_path_meta["smdb_upload_uuid"] = upload_uuid
+
+    
+    if not validate_root_metadata(root_path_meta, librootfolder):
+        return
+
+    loader = QCDatabaseLoader(conn)
+    log.info(f"Processing Base Directory Metadata: {librootfolder}")
+    meta_data_id = loader.load_metadata(root_path_meta)
+    
+    if meta_data_id is None:
+        return
+    
     # --- FastQC zips ---
     pattern = str(Path(librootfolder) / "stats/reads/fastqc/*/*fastqc.zip")
     files   = glob.glob(pattern, recursive=True)
 
     if not files:
-        log.warning(f"No FastQC zip files found under: {librootfolder}")
+        log.warning(f"No FastQC zip files found")
     else:
-        log.info(f"Found {len(files)} FastQC file(s) under {librootfolder}")
+        log.info(f"Processing {len(files)} FastQC file(s)")
 
         for zip_path in files:
             log.info(f"Processing FastQC: {zip_path}")
             try:
                 # 1. Extract metadata from the path
-                meta = extract_path_metadata(zip_path)
+                meta = extract_fastqc_path_metadata(zip_path)
 
                 # 2. Parse the file contents
                 fh   = open_fastqc_zip(zip_path)
                 data = parse_fastqc_file(fh)
 
-                # 3. Merge — path metadata wins on conflict (e.g. libid)
+                # 3. Merge — path metadata wins on conflict (e.g. library_id)
                 data["source_file"] = zip_path
                 data.update(meta)
 
@@ -907,23 +1240,24 @@ def mother(conn, librootfolder: str) -> None:
                     continue
 
                 # 4. Load to DB
-                load_to_db(conn, data)
+                loader.load_fastqc_data(data)
 
             except StopIteration:
                 log.error(f"No fastqc_data.txt found inside zip: {zip_path}")
                 conn.rollback()
             except Exception as e:
-                log.error(f"Failed to process {zip_path}: {e}")
+                log.exception(f"Failed to process {zip_path}: {e}")
                 conn.rollback()
+                sys.exit(1)
 
     # --- BBDuk low-complexity logs ---
     log_pattern = str(Path(librootfolder) / "logs/reads/low_complexity/*.log")
     log_files   = glob.glob(log_pattern)
 
     if not log_files:
-        log.warning(f"No BBDuk low-complexity log files found under: {librootfolder}")
+        log.warning(f"No BBDuk low-complexity log files found")
     else:
-        log.info(f"Found {len(log_files)} BBDuk log file(s) under {librootfolder}")
+        log.info(f"Processing {len(log_files)} BBDuk log file(s)")
 
         for log_path in log_files:
             log.info(f"Processing BBDuk log: {log_path}")
@@ -944,10 +1278,10 @@ def mother(conn, librootfolder: str) -> None:
                     log.warning(f"Skipping due to missing summary stats in log: {log_path}")
                     continue
 
-                load_bbduk_to_db(conn, data)
+                loader.load_bbduk(data)
 
             except Exception as e:
-                log.error(f"Failed to process BBDuk log {log_path}: {e}")
+                log.exception(f"Failed to process BBDuk log {log_path}: {e}")
                 conn.rollback()
 
 
@@ -956,44 +1290,55 @@ def mother(conn, librootfolder: str) -> None:
 # ---------------------------------------------------------------------------
 
 def main():
+    # Usage examples:
+    #
+    # Single library folder:
+    #   python -m parsers.fastqc_to_db_claude \
+    #       --librootfolder /datasets/caeg_production/libraries/LV7/008/891/LV7008891944/20260401_A23JH5FLT4/v1.0.8/4ebe3d1488023a26ec5b50b4e6a71f6b/ \
+    #       --host dandypdb01fl --dbname smdb --user postgres --password yourpassword
+    #
+
+
     parser = argparse.ArgumentParser(
-        description="Load FastQC zip files into PostgreSQL, "
-                    "either from a single library root folder or a glob pattern."
+        description=(
+            "Parse FastQC zip files and BBDuk low-complexity logs into PostgreSQL, "
+            "either from a single library root folder or a glob pattern.\n\n"
+            "Example:\n"
+            "  python -m parsers.fastqc_to_db_claude \\\n"
+            "      --librootfolder /datasets/caeg_production/libraries/LV7/008/891/"
+            "LV7008891944/20260401_A23JH5FLT4/v1.0.8/4ebe3d1488023a26ec5b50b4e6a71f6b/ \\\n"
+            "      --host dandypdb01fl --dbname smdb --user postgres --password yourpassword\n\n"
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     group = parser.add_mutually_exclusive_group(required=True)
     group.add_argument(
         "--librootfolder",
         help="Path to a single library root folder "
-             "(e.g. /datasets/caeg_production/libraires/lv7/008/003/libid/date_fc/v1.08/hash/)"
-    )
-    group.add_argument(
-        "--pattern",
-        help="Glob pattern to match multiple library root folders "
-             "(e.g. '/datasets/caeg_production/libraires/lv7/*/*/*/*/*/*/*/')"
+             "(e.g. /datasets/caeg_production/libraries/LV7/008/891/LV7008891944/20260401_A23JH5FLT4/v1.0.8/<hash>/)"
     )
     parser.add_argument("--host",     default="localhost")
     parser.add_argument("--port",     type=int, default=5432)
     parser.add_argument("--dbname",   required=True)
     parser.add_argument("--user",     required=True)
     parser.add_argument("--password", default="")
+
     args = parser.parse_args()
 
     conn = psycopg2.connect(
         host=args.host, port=args.port,
         dbname=args.dbname, user=args.user, password=args.password,
+        options=f"-c search_path=qc",
     )
+    
+    conn2 = psycopg.connect(host=args.host, port=args.port,
+        dbname=args.dbname, user=args.user, password=args.password,
+        options=f"-c search_path=qc", row_factory=dict_row)
 
     try:
-        if args.librootfolder:
-            mother(conn, args.librootfolder)
-        else:
-            folders = glob.glob(args.pattern, recursive=True)
-            if not folders:
-                log.warning(f"No folders matched pattern: {args.pattern}")
-                return
-            log.info(f"Found {len(folders)} library root folder(s)")
-            for folder in folders:
-                mother(conn, folder)
+        mother(conn, args.librootfolder)
+    except Exception:
+        log.Exception("Fatal error during processing")
     finally:
         conn.close()
 

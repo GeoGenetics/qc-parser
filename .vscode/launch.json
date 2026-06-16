@@ -1,0 +1,25 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Debug fastqc_to_db_claude",
+            "type": "python",
+            "request": "launch",
+            "module": "parsers.fastqc_to_db_claude",
+            "console": "integratedTerminal",
+            "justMyCode": false,
+            "args": [
+                "--librootfolder",
+                "/datasets/caeg_production/libraries/LV7/008/891/LV7008891944/20260401_A23JH5FLT4/v1.0.8/4ebe3d1488023a26ec5b50b4e6a71f6b",
+                "--host",
+                "dandypdb01fl",
+                "--dbname",
+                "smdb",
+                "--user",
+                "postgres",
+                "--password",
+                "Wtcantfw36c!91193"
+            ]
+        }
+    ]
+}
