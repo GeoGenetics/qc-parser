@@ -1,17 +1,10 @@
 import yaml
 import pandas as pd
-import csv
 from typing import Any
 from decimal import Decimal
-from unittest import result
-import psycopg
-from psycopg.rows import dict_row
-import sys
 from typing import Any, Iterable
 from psycopg2.extras import RealDictCursor
 from psycopg2 import sql
-from curses import meta
-from fileinput import filename
 import hashlib
 import io
 import re
@@ -20,11 +13,10 @@ import logging
 import argparse
 import uuid
 import zipfile
-from datetime import datetime, timezone
+from datetime import datetime
 from pathlib import Path
 import json
 import psycopg2
-from psycopg2.extras import execute_values
 
 logging.basicConfig(
     level=logging.INFO,
@@ -1921,10 +1913,6 @@ def main():
         dbname=args.dbname, user=args.user, password=args.password,
         options=f"-c search_path=qc",
     )
-    
-    conn2 = psycopg.connect(host=args.host, port=args.port,
-        dbname=args.dbname, user=args.user, password=args.password,
-        options=f"-c search_path=qc", row_factory=dict_row)
 
     try:
         mother(conn, args.librootfolder)
