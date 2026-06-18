@@ -1,3 +1,7 @@
+import yaml
+import pandas as pd
+import csv
+from typing import Any
 from decimal import Decimal
 from unittest import result
 import psycopg
@@ -156,10 +160,12 @@ class QCDatabaseLoader:
                 
                 old_value = normalize_value(old_row.get(key))
                 new_value = normalize_value(new_value)
+                
 
                 if isinstance(old_value, Decimal) and isinstance(new_value, Decimal):
                     if old_value.is_nan() and new_value.is_nan():
-                        return changes                
+                        return changes
+                
 
                 if old_value != new_value:
                     changes[key] = {
@@ -194,6 +200,7 @@ class QCDatabaseLoader:
         non_pk_columns = [col for col in columns if col not in pk_columns]
 
         where_pk = " AND ".join([f"{col} = %({col})s" for col in pk_columns])
+
         
         with self.conn.cursor(cursor_factory=RealDictCursor) as cur:
             cur.execute(
@@ -206,9 +213,10 @@ class QCDatabaseLoader:
             )
             
             existing = cur.fetchone()
+            
 
             if existing:
-                changes = self.diff_rows(existing, row, ignore_columns=pk_columns + tuple(["smdb_upload_uuid"]))
+                changes = self.diff_rows(existing, row, ignore_columns=pk_columns + tuple(["smdb_upload_uuid"]) + tuple(["config"]))
 
                 if changes:
                     log.warning(
@@ -233,18 +241,49 @@ class QCDatabaseLoader:
             insert_cols = ", ".join(columns)
             insert_placeholders = ", ".join([f"%({col})s" for col in columns])
             conflict_cols = ", ".join(pk_columns)
-        
-            cur.execute(
-                f"""
+            
+            sql_query = f"""
                 INSERT INTO {table_name} ({insert_cols})
                 VALUES ({insert_placeholders})
                 ON CONFLICT ({conflict_cols})
                 DO UPDATE SET {update_assignments}
                 returning {", ".join(returning_columns)}
-                """,
+                """
+                
+        
+            cur.execute(
+                sql_query,
                 row,
             )
             return cur.fetchone()
+            
+
+    def load_samtools_stats(self, data: dict) -> int | None:  
+        unique_key_columns = self.get_constraint_columns(
+            table_name="samtools_stats",
+            constraint_name="samtools_stats_library_id_flowcell_id_pipeline_version_pipe_key",
+            key_type="UNIQUE",
+        )
+                
+        result = self.upsert_row(
+            table_name="samtools_stats",
+            pk_columns=unique_key_columns,
+            row=data,
+        )
+      
+        if result is None:
+            self.conn.rollback()
+
+            log.error(
+                "Upload failed due to unknown error for: %s",
+                data["source_path"],
+            )
+
+            return None
+
+        self.conn.commit()
+        
+        return result
 
 
     def load_metadata(self, data: dict) -> int | None:  
@@ -415,15 +454,44 @@ class QCDatabaseLoader:
 
         return result
     
+    def load_nonpareil(self, data: list) -> int | None:
+        unique_key_columns = self.get_constraint_columns(
+            table_name="non_pareil",
+            constraint_name="non_pareil_unique",
+            key_type="UNIQUE",
+        )
+        
+        for row in data:
+            result = self.upsert_row(
+                table_name="non_pareil",
+                pk_columns=unique_key_columns,
+                row=row,
+            )
+
+            if result is None:
+                self.conn.rollback()
+
+                log.error(
+                    "Upload failed due to unknown error for: %s",
+                    data["source_file"],
+                )
+
+                return None
+
+        self.conn.commit()
+        
+        return result
+    
                 
     def load_bbduk(self, data: dict) -> int | None:
         unique_key_columns = self.get_constraint_columns(
-            table_name="meta_data",
-            constraint_name="meta_data_pk",
+            table_name="bbduk_low_complexity",
+            constraint_name="bbduk_low_complexity_source_file_key",
+            key_type="UNIQUE",
         )
                 
         result = self.upsert_row(
-            table_name="meta_data",
+            table_name="bbduk_low_complexity",
             pk_columns=unique_key_columns,
             row=data,
         )
@@ -442,6 +510,38 @@ class QCDatabaseLoader:
         self.conn.commit()
         
         return result
+    
+    def load_derep_log(self, data: list) -> int | None:
+        unique_key_columns = self.get_constraint_columns(
+            table_name="derep",
+            constraint_name="derep_unique",
+            key_type="UNIQUE",
+        )
+        
+        results = []
+        for row in data:
+            result = self.upsert_row(
+                table_name="derep",
+                pk_columns=unique_key_columns,
+                row=row,
+            )
+
+            if result is None:
+                self.conn.rollback()
+
+                log.error(
+                    "Upload failed due to unknown error for: %s",
+                    data["source_path"],
+                )
+
+                return None
+            
+            results.append(result)
+
+        self.conn.commit()
+        
+        return results
+    
 
 # ---------------------------------------------------------------------------
 # Path metadata extraction
@@ -501,7 +601,6 @@ def extract_fastqc_path_metadata(zip_path: str) -> dict:
     
     else:
         flowcell_id = flowcell_id[1:]
-
     
     try:
         sequencing_date = datetime.strptime(date_str, "%Y%m%d").date()
@@ -653,7 +752,23 @@ def extract_root_path_metadata(root_path: str) -> dict:
         "flowcell_position": flowcell_position,
     }
 
-def extract_log_path_metadata(log_path: str) -> dict:
+def extract_nonpareil_stats(tsv_path: str) -> list[dict]:
+    """
+    Extract Nonpareil stats from a TSV file with 'Metric' and 'Value' columns.
+    """
+    tsv_path = str(tsv_path)
+    
+    path_metadata = extract_nonpareil_path_metadata(str(tsv_path))    
+    
+    df = pd.read_csv(tsv_path, sep="\t")
+    df = df.assign(**path_metadata)
+    df = df.rename(columns={"modelR": "model_r", "LRstar": "lr_star"})
+    df.columns = df.columns.str.strip().str.lower()
+    
+    return df.to_dict(orient="records")
+    
+
+def extract_low_complexity_log_path_metadata(log_path: str) -> dict:
     """
     Expected structure (15 parts):
     /datasets/caeg_production/libraires/lv7/008/003/{library_id}/{date}_{fc}/{version}/{hash}/
@@ -682,11 +797,17 @@ def extract_log_path_metadata(log_path: str) -> dict:
     filename         = parts[14]
 
     date_str, _, flowcell_id = date_fc.partition("_")
-    try:
-        sequencing_date = datetime.strptime(date_str, "%Y%m%d").date()
-    except ValueError:
-        log.warning(f"Could not parse date from '{date_str}' in path: {log_path}")
-        sequencing_date = None
+    flowcell_position = flowcell_id[0] if flowcell_id else None
+    
+    if not len(flowcell_id) == 10:
+        log.error(f"flowcell_id string does not match expected format (flowcell position + 9-char ID): '{flowcell_id}'")
+        flowcell_id = None     
+    elif not flowcell_position in ('B', 'A'):
+        log.error(f"Flowcell position is not valid (should be 'B' or 'A'): '{flowcell_position}'")
+        flowcell_position = None
+        flowcell_id = None
+    else:
+        flowcell_id = flowcell_id[1:]
 
     fname_match = re.match(
         r"^Lib_(?P<lib>[^_]+)_(?:(?P<lane>L\d+)_)?(?P<read_type>R1|R2|collapsed|collapsedtrunc|singleton)\.log$",
@@ -709,11 +830,11 @@ def extract_log_path_metadata(log_path: str) -> dict:
 
     return {
         "library_id":            library_id,
-        "sequencing_date":         sequencing_date,
         "flowcell_id":         flowcell_id,
         "pipeline_version": pipeline_version,
         "pipeline_hash":    pipeline_hash,
         "read_type":        read_type,
+        "flowcell_position": flowcell_position,
     }
 
 
@@ -1157,12 +1278,392 @@ def validate_root_metadata(meta: dict, path: str) -> bool:
 
     return True
 
+
+def extract_low_complexity_log_path_metadata(log_path: str) -> dict:
+    """
+    Expected structure (15 parts):
+    /datasets/caeg_production/libraires/lv7/008/003/{library_id}/{date}_{fc}/{version}/{hash}/
+        logs/reads/low_complexity/{filename}.log
+
+    parts[7]  = library_id
+    parts[8]  = date_fc   e.g. '20231015_HV3TWDSX7'
+    parts[9]  = version   e.g. 'v1.08'
+    parts[10] = hash
+    parts[14] = filename  e.g. 'Lib_LV7008891944_collapsed.log'
+    """
+    parts = Path(log_path).parts
+
+    if len(parts) != 15:
+        log.warning(f"Log path does not match expected depth (=15, got {len(parts)}): {log_path}")
+        return {
+            "library_id": None, "sequencing_date": None, "flowcell_id": None,
+            "pipeline_version": None, "pipeline_hash": None,
+            "read_type": None, "flowcell_position": None
+        }
+
+    library_id            = parts[7]
+    date_fc          = parts[8]
+    pipeline_version = parts[9]
+    pipeline_hash    = parts[10]
+    filename         = parts[14]
+    data_type       = parts[13]
+
+    date_str, _, flowcell_id = date_fc.partition("_")
+    flowcell_position = flowcell_id[0] if flowcell_id else None
+    
+    if not len(flowcell_id) == 10:
+        log.error(f"flowcell_id string does not match expected format (flowcell position + 9-char ID): '{flowcell_id}'")
+        flowcell_id = None     
+    elif not flowcell_position in ('B', 'A'):
+        log.error(f"Flowcell position is not valid (should be 'B' or 'A'): '{flowcell_position}'")
+        flowcell_position = None
+        flowcell_id = None
+    else:
+        flowcell_id = flowcell_id[1:]
+
+    fname_match = re.match(
+        r"^Lib_(?P<lib>[^_]+)_(?:(?P<lane>L\d+)_)?(?P<read_type>R1|R2|collapsed|collapsedtrunc|singleton)\.log$",
+        filename,
+    )
+    if fname_match:
+        fname_libid = fname_match.group("lib")
+        lane = fname_match.group("lane")
+        if fname_libid != library_id:
+            log.warning(
+                f"library_id mismatch between path and filename: path={library_id}, filename={fname_libid} ({log_path})"
+            )
+        read_type = fname_match.group("read_type")
+        
+        if lane is None:
+            if read_type != "collapsed":
+                log.warning(
+                    f"Expected 'collapsed' for lane-less file but got '{read_type}' in: {filename}"
+                )
+            lane = 'merged'
+    else:
+        log.warning(
+            f"Log filename does not follow expected format "
+            f"'Lib_{{library_id}}_[{{lane}}_]{{read_type}}.log' "
+            f"(valid read_type: R1, R2, collapsed, collapsedtrunc, singleton): {filename}"
+        )
+        read_type = None
+
+    return {
+        "library_id":            library_id,
+        "flowcell_id":         flowcell_id,
+        "pipeline_version": pipeline_version,
+        "pipeline_hash":    pipeline_hash,
+        "read_type":        read_type,
+        "flowcell_position": flowcell_position,
+        "data_type":        data_type,
+        "lane":             lane,
+    }
+    
+    
+def extract_nonpareil_path_metadata(tsv_path: str) -> dict:
+    """
+    Expected structure (15 parts):
+    /datasets/caeg_production/libraires/LXX/XXX/XXX/{library_id}/{date}_{fc}/{version}/{hash}/
+        stats/reads/nonpareil/{data_type}/{filename}.tsv
+
+    parts[7]  = library_id
+    parts[8]  = date_fc   e.g. '20231015_HV3TWDSX7'
+    parts[9]  = version   e.g. 'v1.08'
+    parts[10] = hash
+    parts[14] = filename  e.g. 'Lib_LV7008891944_collapsed.log'
+    """
+    parts = Path(tsv_path).parts
+    
+    base_parts = parts[:11]
+    suffix_parts = parts[11:]
+
+    if len(parts) != 16:
+        log.warning(f"Path does not match expected depth (=16, got {len(parts)}): {tsv_path}")
+        return {
+            "library_id": None, "sequencing_date": None, "flowcell_id": None,
+            "pipeline_version": None, "pipeline_hash": None,
+            "read_type": None, "flowcell_position": None
+        }
+        
+    root_meta_data = extract_root_path_metadata(str(Path(*base_parts)))
+
+    library_id       = root_meta_data.get("library_id")
+    flowcell_id      = root_meta_data.get("flowcell_id")
+    pipeline_version = root_meta_data.get("pipeline_version")
+    pipeline_hash    = root_meta_data.get("pipeline_hash")
+    filename         = suffix_parts[4]
+    data_type       = suffix_parts[3]
+    
+    fname_match = re.match(
+    r"^Lib_(?P<lib>[^_]+)_(?:(?P<lane>L\d+)_)?(?P<read_type>R1|R2|collapsed|collapsedtrunc|singleton)\.tsv$",
+    filename,
+)
+
+    if fname_match:
+        fname_metadata = fname_match.groupdict()
+
+        fname_libid = fname_metadata["lib"]
+        lane = fname_metadata["lane"]
+        read_type = fname_metadata["read_type"]
+
+        if fname_libid != library_id:
+            log.warning(
+                f"library_id mismatch between path and filename: path={library_id}, filename={fname_libid} ({tsv_path})"
+            )
+            
+        if lane is None:
+            if read_type != "collapsed":
+                log.warning(
+                    f"Expected 'collapsed' for lane-less file but got '{read_type}' in: {filename}"
+                )
+            lane = 'merged'
+    else:
+        log.warning(
+            f"Filename does not follow expected format, aborting upsert"
+            f"'Lib_{{library_id}}_[{{lane}}_]{{read_type}}.tsv' "
+            f"(valid read_type: R1, R2, collapsed, collapsedtrunc, singleton): {filename}"
+        )
+        return None
+
+    return {
+        "library_id":            library_id,
+        "flowcell_id":         flowcell_id,
+        "pipeline_version": pipeline_version,
+        "pipeline_hash":    pipeline_hash,
+        "read_type":        read_type,
+        "data_type":        data_type,
+        'lane':             lane,
+        'source_file':     tsv_path,
+        }
+    
+def parse_derep_log(path: str | Path) -> dict:
+    
+        
+    parts = Path(path).parts
+    
+    base_parts = parts[:11]
+    suffix_parts = parts[11:]
+
+    if len(parts) != 15:
+        log.warning(f"Path does not match expected depth (=16, got {len(parts)}): {path}")
+        return {
+            "library_id": None, "sequencing_date": None, "flowcell_id": None,
+            "pipeline_version": None, "pipeline_hash": None,
+            "read_type": None, "flowcell_position": None
+        }
+        
+    root_meta_data = extract_root_path_metadata(str(Path(*base_parts)))
+
+    library_id       = root_meta_data.get("library_id")
+    flowcell_id      = root_meta_data.get("flowcell_id")
+    pipeline_version = root_meta_data.get("pipeline_version")
+    pipeline_hash    = root_meta_data.get("pipeline_hash")
+    filename         = suffix_parts[3]
+    data_type       = suffix_parts[2]
+    fname_match = re.match(
+    r"^Lib_(?P<lib>[^_]+)_(?:(?P<lane>L\d+)_)?(?P<read_type>R1|R2|collapsed|collapsedtrunc|singleton)\.log$",
+    filename,
+)
+
+    if fname_match:
+        fname_metadata = fname_match.groupdict()
+
+        fname_libid = fname_metadata["lib"]
+        lane = fname_metadata["lane"]
+        read_type = fname_metadata["read_type"]
+
+        if fname_libid != library_id:
+            log.warning(
+                f"library_id mismatch between path and filename: path={library_id}, filename={fname_libid} ({path})"
+            )
+            
+        if lane is None:
+            if read_type != "collapsed":
+                log.warning(
+                    f"Expected 'collapsed' for lane-less file but got '{read_type}' in: {filename}"
+                )
+            lane = 'merged'
+    else:
+        log.warning(
+            f"Filename does not follow expected format, aborting upsert"
+            f"'Lib_{{library_id}}_[{{lane}}_]{{read_type}}.tsv' "
+            f"(valid read_type: R1, R2, collapsed, collapsedtrunc, singleton): {filename}"
+        )
+        return None
+    
+    with open(path) as f:
+        lines = f.readlines()
+        
+    result = []
+    for line in lines:
+        parts = line.strip().split()
+        if len(parts) != 5:
+            log.error(f"Unexpected log format: {path}")
+            
+        pre_result = {"_".join(parts[2:]): int(parts[1])}
+        pre_result['source_file'] = path
+        pre_result['read_type'] = read_type
+        pre_result['lane'] = lane
+        pre_result['library_id'] = library_id
+        pre_result['flowcell_id'] = flowcell_id
+        pre_result['pipeline_version'] = pipeline_version
+        pre_result['pipeline_hash'] = pipeline_hash
+        pre_result['data_type'] = data_type
+        result.append(pre_result)
+    
+    result = pd.DataFrame(result)
+    return result
+
+def parse_pipeline_config(path: str | Path) -> dict:
+    
+    '''
+    Expected path: /datasets/caeg_production/libraries/LV7/008/864/LV7008864206/20250415_BHVVTHDSXC/v1.0.8/4ebe3d1488023a26ec5b50b4e6a71f6b/config/config.yaml
+    
+    '''
+    result = {}
+    yaml_path = Path(path)
+    
+    path_parts = yaml_path.parts
+    
+    base_parts = path_parts[:11]
+    
+
+    with yaml_path.open() as f:
+        yaml_data = yaml.safe_load(f)
+    
+    yaml_data = json.dumps(yaml_data)
+    
+    
+    result['config'] = yaml_data
+    result['config_source_file'] = str(yaml_path)
+    
+    return result
+
+
+def parse_samtools_stats(filepath):
+    data = {}
+
+    with open(filepath) as f:
+        for line in f:
+            if not line.startswith("SN\t"):
+                continue
+
+            _, metric, value, *_ = line.rstrip().split("\t")
+
+            metric = metric.rstrip(":")
+            metric = (
+                metric.lower()
+                .replace(" ", "_")
+                .replace("(", "")
+                .replace(")", "")
+                .replace("%", "pct")
+                .replace("/", "_")
+                .replace("1st", "first")
+                .replace('-', '_')
+            )
+
+            # remove comments
+            value = value.split("#")[0].strip()
+
+            try:
+                if "." in value or "e" in value.lower():
+                    value = float(value)
+                else:
+                    value = int(value)
+            except ValueError:
+                pass
+
+            data[metric] = value
+
+    return data
+
+def parse_samtools_metadata(filepath):
+    """
+    Expected structure (15 parts):
+    /datasets/caeg_production/libraries/LV7/008/864/LV7008864206/20250415_BHVVTHDSXC/v1.0.8/4ebe3d1488023a26ec5b50b4e6a71f6b
+    /stats/{data_type}/samtools_stats/Lib_LV7008864206_collapsed.txt
+
+    parts[7]  = library_id
+    parts[8]  = date_fc   e.g. '20231015_HV3TWDSX7'
+    parts[9]  = version   e.g. 'v1.08'
+    parts[10] = hash
+    parts[14] = filename  e.g. 'Lib_LV7008891944_collapsed.log'
+    """
+    parts = Path(filepath).parts
+    
+    base_parts = parts[:11]
+    suffix_parts = parts[11:]
+
+    if len(parts) != 15:
+        log.warning(f"Path does not match expected depth (=15, got {len(parts)}): {filepath}")
+        return {
+            "library_id": None, "sequencing_date": None, "flowcell_id": None,
+            "pipeline_version": None, "pipeline_hash": None,
+            "read_type": None, "flowcell_position": None
+        }
+        
+    root_meta_data = extract_root_path_metadata(str(Path(*base_parts)))
+
+    library_id       = root_meta_data.get("library_id")
+    flowcell_id      = root_meta_data.get("flowcell_id")
+    pipeline_version = root_meta_data.get("pipeline_version")
+    pipeline_hash    = root_meta_data.get("pipeline_hash")
+    filename         = suffix_parts[3]
+    data_type       = suffix_parts[1]
+    
+    
+    if data_type not in ("prefilter_aligns", "aligns"):
+        log.warning(f"Unexpected data_type '{data_type}' in path: {filepath}")
+    
+    fname_match = re.match(
+    r"^Lib_(?P<lib>[^_]+)_(?:(?P<lane>L\d+)_)?(?P<read_type>R1|R2|collapsed|collapsedtrunc|singleton)\.txt$",
+    filename,
+)
+
+    if fname_match:
+        fname_metadata = fname_match.groupdict()
+
+        fname_libid = fname_metadata["lib"]
+        lane = fname_metadata["lane"]
+        read_type = fname_metadata["read_type"]
+
+        if fname_libid != library_id:
+            log.warning(
+                f"library_id mismatch between path and filename: path={library_id}, filename={fname_libid} ({filepath})"
+            )
+            
+        if lane is None:
+            if read_type != "collapsed":
+                log.warning(
+                    f"Expected 'collapsed' for lane-less file but got '{read_type}' in: {filename}"
+                )
+            lane = 'merged'
+    else:
+        log.warning(
+            f"Filename does not follow expected format, aborting upsert"
+            f"'Lib_{{library_id}}_[{{lane}}_]{{read_type}}.tsv' "
+            f"(valid read_type: R1, R2, collapsed, collapsedtrunc, singleton): {filename}"
+        )
+        return None
+
+    return {
+        "library_id":            library_id,
+        "flowcell_id":         flowcell_id,
+        "pipeline_version": pipeline_version,
+        "pipeline_hash":    pipeline_hash,
+        "read_type":        read_type,
+        "data_type":        data_type,
+        'lane':             lane,
+        'source_file':     filepath,
+        }
+    
+
+
 # ---------------------------------------------------------------------------
 # Orchestration
 # ---------------------------------------------------------------------------
 
 def mother(conn, librootfolder: str) -> None:
-    
     
     """
     Orchestrate parsing and loading for all FastQC zip files and BBDuk
@@ -1171,7 +1672,6 @@ def mother(conn, librootfolder: str) -> None:
 
     path = Path(librootfolder)
 
-    
     root_path_meta = extract_root_path_metadata(librootfolder)
     upload_uuid = str(uuid.uuid4())
     log.info(f"SMDB upload ID for this batch: {upload_uuid}")
@@ -1183,10 +1683,30 @@ def mother(conn, librootfolder: str) -> None:
 
     loader = QCDatabaseLoader(conn)
     log.info(f"Processing Base Directory Metadata: {librootfolder}")
+    
+    config_path = str(Path(librootfolder) / "config/config.yaml")
+
+    if not config_path:
+        log.warning(f"No config.yaml file found")
+    else:
+        log.info(f"Processing: {config_path}")
+
+        try:
+            config_data = parse_pipeline_config(config_path)
+            
+        except Exception as e:
+            log.exception(f"Failed to process Pipeline Config: {e}")
+            conn.rollback()
+    
+    root_path_meta.update(config_data)
     meta_data_id = loader.load_metadata(root_path_meta)
+    
     
     if meta_data_id is None:
         return
+    
+        
+    
     
     # --- FastQC zips ---
     pattern = str(Path(librootfolder) / "stats/reads/fastqc/*/*fastqc.zip")
@@ -1248,7 +1768,6 @@ def mother(conn, librootfolder: str) -> None:
             except Exception as e:
                 log.exception(f"Failed to process {zip_path}: {e}")
                 conn.rollback()
-                sys.exit(1)
 
     # --- BBDuk low-complexity logs ---
     log_pattern = str(Path(librootfolder) / "logs/reads/low_complexity/*.log")
@@ -1262,7 +1781,7 @@ def mother(conn, librootfolder: str) -> None:
         for log_path in log_files:
             log.info(f"Processing BBDuk log: {log_path}")
             try:
-                meta = extract_log_path_metadata(log_path)
+                meta = extract_low_complexity_log_path_metadata(log_path)
 
                 with open(log_path, encoding="utf-8") as fh:
                     data = parse_bbduk_log(fh)
@@ -1283,6 +1802,78 @@ def mother(conn, librootfolder: str) -> None:
             except Exception as e:
                 log.exception(f"Failed to process BBDuk log {log_path}: {e}")
                 conn.rollback()
+
+# --- Non pareil tsv ---
+    path_pattern = str(Path(librootfolder) / "stats/reads/nonpareil/derep/*.tsv")
+    file_paths   = glob.glob(path_pattern)
+
+    if not file_paths:
+        log.warning(f"No Nonpareil tsv found")
+    else:
+        log.info(f"Processing {len(file_paths)} nonpareil tsv file(s)")
+
+        for ele in file_paths:
+            log.info(f"Processing Nonpareil tsv: {ele}")
+            try:
+                data = extract_nonpareil_stats(ele)
+                loader.load_nonpareil(data)
+
+            except Exception as e:
+                log.exception(f"Failed to process Nonpareil tsv: {e}")
+                conn.rollback()
+                
+            
+# --- Derep log ---
+
+    path_pattern = str(Path(librootfolder) / "logs/reads/derep/*.log")
+    file_paths   = glob.glob(path_pattern)
+
+    if not file_paths:
+        log.warning(f"No derep log found")
+    else:
+        log.info(f"Processing {len(file_paths)} derep log file(s)")
+
+        for ele in file_paths:
+            log.info(f"Processing Derep log: {ele}")
+            try:
+                data = parse_derep_log(ele)
+                
+                data = data.to_dict(orient="records")
+                loader.load_derep_log(data)
+
+            except Exception as e:
+                log.exception(f"Failed to process Derep log: {e}")
+                conn.rollback()
+                
+# --- samtools ---
+    ''''/datasets/caeg_production/libraries/LV7/008/864/LV7008864206/20250415_BHVVTHDSXC/v1.0.8/4ebe3d1488023a26ec5b50b4e6a71f6b/stats/aligns/samtools_stats'''
+
+    path_pattern = str(Path(librootfolder) / "stats/*/samtools_stats/*.txt")
+    file_paths   = glob.glob(path_pattern)
+
+    if not file_paths:
+        log.warning(f"No samtools stats files found")
+    else:
+        if len(file_paths) != 2:
+            log.warning(f"Expected 2 samtools stats files, found {len(file_paths)}")
+
+        for ele in file_paths:
+            log.info(f"Processing samtools stats file: {ele}")
+            try:
+                meta_data = parse_samtools_metadata(ele)
+                data = parse_samtools_stats(ele)
+                data.update(meta_data)
+                loader.load_samtools_stats(data)
+
+            except Exception as e:
+                log.exception(f"Failed to process Samtools stats: {e}")
+                conn.rollback()
+            
+                
+    
+                
+                
+
 
 
 # ---------------------------------------------------------------------------
@@ -1338,7 +1929,7 @@ def main():
     try:
         mother(conn, args.librootfolder)
     except Exception:
-        log.Exception("Fatal error during processing")
+        log.exception("Fatal error during processing")
     finally:
         conn.close()
 
