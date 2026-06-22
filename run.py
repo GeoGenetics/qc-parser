@@ -18,6 +18,16 @@ from pathlib import Path
 import json
 import psycopg2
 
+UPDATE = 25  # between INFO (20) and WARNING (30)
+
+logging.addLevelName(UPDATE, "UPDATE")
+
+def update(self, message, *args, **kwargs):
+    if self.isEnabledFor(UPDATE):
+        self._log(UPDATE, message, args, **kwargs)
+
+logging.Logger.update = update
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s"
@@ -47,6 +57,7 @@ class QCDatabaseLoader:
 
     def __init__(self, conn):
         self.conn = conn
+        self._constraint_cache = {}
         
     def get_constraint_columns(
         self,
@@ -55,6 +66,15 @@ class QCDatabaseLoader:
         schema_name: str = "qc",
         key_type: str = "PRIMARY KEY",
     ) -> tuple[str, ...]:
+
+        cache_key = (schema_name, table_name, constraint_name, key_type)
+        if cache_key in self._constraint_cache:
+            return self._constraint_cache[cache_key]
+
+        
+        
+        
+        
         with self.conn.cursor() as cur:
 
             if constraint_name:
@@ -99,6 +119,7 @@ class QCDatabaseLoader:
                 f"{schema_name}.{table_name}.{constraint_name}"
             )
 
+        self._constraint_cache[cache_key] = columns
         return columns
     
     
@@ -211,7 +232,7 @@ class QCDatabaseLoader:
                 changes = self.diff_rows(existing, row, ignore_columns=pk_columns + tuple(["smdb_upload_uuid"]) + tuple(["config"]))
 
                 if changes:
-                    log.warning(
+                    log.update(
                         "Updating %s: changes=%s",
                         table_name,
                         json.dumps(changes, default=str),
@@ -248,6 +269,98 @@ class QCDatabaseLoader:
                 row,
             )
             return cur.fetchone()
+        
+    def delete_metadata_record(
+    self,
+    library_id: str,
+    flowcell_id: str,
+    pipeline_version: str,
+    pipeline_hash: str,
+) -> bool:
+        try:
+            with self.conn.cursor() as cur:
+                cur.execute(
+                    """
+                    DELETE FROM meta_data
+                    WHERE library_id = %s
+                    AND flowcell_id = %s
+                    AND pipeline_version = %s
+                    AND pipeline_hash = %s
+                    """,
+                    (
+                        library_id,
+                        flowcell_id,
+                        pipeline_version,
+                        pipeline_hash,
+                    ),
+                )
+
+                deleted = cur.rowcount
+
+            self.conn.commit()
+
+            if deleted == 0:
+                log.warning("No matching meta_data record found")
+                return False
+
+            log.info("Deleted meta_data record and cascading child records")
+            return True
+
+        except Exception:
+            self.conn.rollback()
+            log.exception("Delete failed")
+            return False
+        
+    def load_adapterremoval_settings(self, data: dict) -> int | None:
+        length_distribution = data.pop("length_distribution", [])
+
+        unique_key_columns = self.get_constraint_columns(
+            table_name="adapter_removal_settings",
+            constraint_name="adapter_removal_settings_unique",
+            key_type="UNIQUE",
+        )
+
+        result = self.upsert_row(
+            table_name="adapter_removal_settings",
+            pk_columns=unique_key_columns,
+            row=data,
+            returning_columns=["id"],
+        )
+
+        if result is None:
+            self.conn.rollback()
+            log.error("AdapterRemoval settings upload failed for: %s", data.get("source_file"))
+            return None
+
+        settings_id = result["id"]
+
+        child_unique_key_columns = self.get_constraint_columns(
+            table_name="adapter_removal_length_distribution",
+            constraint_name="adapter_removal_length_distribution_unique",
+            key_type="UNIQUE",
+        )
+
+        for row in length_distribution:
+            row["settings_id"] = settings_id
+
+            sub_result = self.upsert_row(
+                table_name="adapter_removal_length_distribution",
+                pk_columns=child_unique_key_columns,
+                row=row,
+                log_all=False,
+            )
+
+            if sub_result is None:
+                self.conn.rollback()
+                log.error(
+                    "AdapterRemoval length distribution upload failed for: %s",
+                    data.get("source_file"),
+                )
+                return None
+
+        self.conn.commit()
+        return settings_id
+            
             
 
     def load_samtools_stats(self, data: dict) -> int | None:  
@@ -351,7 +464,6 @@ class QCDatabaseLoader:
         }
 
         table_name = 'fastqc'
-        log.info(f'Upserting row(s) into {table_name}')
         result = self.upsert_row(
             row=meta_data,
             table_name=table_name,
@@ -850,6 +962,42 @@ def open_fastqc_zip(zip_path: str) -> io.StringIO:
                 raise ValueError(f"Could not decode {target} as UTF-8 in {zip_path}: {e}") from e
     except zipfile.BadZipFile as e:
         raise ValueError(f"Bad zip file: {zip_path}: {e}") from e
+    
+def delete_metadata_record(
+    self,
+    library_id: str,
+    flowcell_id: str,
+    pipeline_version: str,
+    pipeline_hash: str,
+) -> bool:
+    try:
+        with self.conn.cursor() as cur:
+            cur.execute(
+                """
+                DELETE FROM meta_data
+                WHERE library_id = %s
+                  AND flowcell_id = %s
+                  AND pipeline_version = %s
+                  AND pipeline_hash = %s
+                """,
+                (library_id, flowcell_id, pipeline_version, pipeline_hash),
+            )
+
+            deleted = cur.rowcount
+
+        self.conn.commit()
+
+        if deleted == 0:
+            log.warning("No matching meta_data record found")
+            return False
+
+        log.info("Deleted meta_data record and cascading children")
+        return True
+
+    except Exception:
+        self.conn.rollback()
+        log.exception("Delete failed")
+        return False
 
 # ---------------------------------------------------------------------------
 # Parsing
@@ -1648,14 +1796,195 @@ def parse_samtools_metadata(filepath):
         'lane':             lane,
         'source_file':     filepath,
         }
+
+def extract_adapterremoval_path_metadata(path: str | Path) -> dict:
+    path = Path(path)
+
+    parts = path.parts
+    base_parts = parts[:11]
+
+    if len(parts) != 15:
+        log.warning(
+            "AdapterRemoval settings path does not match expected depth (=15, got %s): %s",
+            len(parts),
+            path,
+        )
+        return {}
+
+    root_meta = extract_root_path_metadata(str(Path(*base_parts)))
+
+    filename = parts[14]
+    data_type = parts[13]
+
+    fname_match = re.match(
+        r"^Lib_(?P<lib>[^_]+)_(?P<lane>L\d+)_(?P<sequencing_method>pe)\.settings$",
+        filename,
+    )
+
+    if not fname_match:
+        log.warning("Unexpected AdapterRemoval settings filename: %s", filename)
+        return None
+
+    fname_meta = fname_match.groupdict()
+
+    if fname_meta["lib"] != root_meta.get("library_id"):
+        log.warning(
+            "library_id mismatch between path and filename: path=%s filename=%s",
+            root_meta.get("library_id"),
+            fname_meta["lib"],
+        )
+
+    return {
+        "library_id": root_meta.get("library_id"),
+        "flowcell_id": root_meta.get("flowcell_id"),
+        "pipeline_version": root_meta.get("pipeline_version"),
+        "pipeline_hash": root_meta.get("pipeline_hash"),
+        "data_type": data_type,
+        "lane": fname_meta["lane"],
+        "sequencing_method": fname_meta["sequencing_method"],
+        "source_file": str(path),
+    }
+
+
+def parse_adapterremoval_settings(path: str | Path) -> dict:
+    path = Path(path)
+
+    meta = extract_adapterremoval_path_metadata(path)
+
+    result = {
+    **meta,
+    "adapterremoval_version": None,
+    "mode": None,
+    "length_distribution": [],
+}
+
+    section = None
+
     
+    with path.open() as f:
+        for raw_line in f:
+            line = raw_line.strip()
+
+            if not line:
+                continue
+
+            if line.startswith("AdapterRemoval ver."):
+                result["adapterremoval_version"] = line.replace("AdapterRemoval ver.", "").strip()
+                continue
+
+            if line == "Trimming of paired-end reads":
+                result["mode"] = "paired_end"
+                continue
+
+            if line.startswith("[") and line.endswith("]"):
+                section = line.strip("[]")
+                continue
+
+            if section == "Adapter sequences":
+                if ":" not in line:
+                    continue
+
+                key, value = line.split(":", 1)
+                field = normalize_db_column_name(key)
+
+                if field in result:
+                    raise ValueError(
+                        f"Duplicate normalized field name: {key!r} -> {field!r} "
+                        f"in file {path}"
+                    )
+
+                result[field] = value.strip()
+
+                continue
+
+            if section in {"Adapter trimming", "Trimming statistics"}:
+                if ":" not in line:
+                    continue
+
+                key, value = line.split(":", 1)
+                field = normalize_db_column_name(key)
+
+                if field in result:
+                    raise ValueError(
+                        f"Duplicate normalized field name: {key!r} -> {field!r} "
+                        f"in file {path}"
+                    )
+
+                result[field] = parse_adapterremoval_value(value.strip())
+
+                continue
+
+            if section == "Length distribution":
+                if line.startswith("Length"):
+                    continue
+
+                cols = line.split()
+                if len(cols) != 8:
+                    log.warning("Unexpected length distribution row in %s: %r", path, line)
+                    continue
+
+                result["length_distribution"].append({
+                    "length": int(cols[0]),
+                    "mate1": int(cols[1]),
+                    "mate2": int(cols[2]),
+                    "singleton": int(cols[3]),
+                    "collapsed": int(cols[4]),
+                    "collapsed_truncated": int(cols[5]),
+                    "discarded": int(cols[6]),
+                    "all_reads": int(cols[7]),
+                })
+
+    return result
+
+
+def parse_adapterremoval_value(value: str):
+    if value == "NA":
+        return None
+
+    if value == "Yes":
+        return True
+
+    if value == "No":
+        return False
+
+    try:
+        if "." in value:
+            return float(value)
+        return int(value)
+    except ValueError:
+        return value
+    
+def normalize_db_column_name(key: str) -> str:
+    key = key.strip().lower()
+
+    key = key.replace("<=", " le ")
+    key = key.replace(">=", " ge ")
+    key = key.replace("<", " lt ")
+    key = key.replace(">", " gt ")
+    key = key.replace("%", " pct ")
+    key = key.replace("+", " plus ")
+
+    # Remove only the bracket/parenthesis characters, not their contents
+    key = key.replace("(", " ")
+    key = key.replace(")", " ")
+    key = key.replace("[", " ")
+    key = key.replace("]", " ")
+
+    key = re.sub(r"[^a-z0-9]+", "_", key)
+    key = re.sub(r"_+", "_", key)
+
+    return key.strip("_")
 
 
 # ---------------------------------------------------------------------------
 # Orchestration
 # ---------------------------------------------------------------------------
 
-def mother(conn, librootfolder: str) -> None:
+def mother(
+    conn,
+    librootfolder: str,
+    include_per_tile_quality: bool = False,
+) -> None:
     
     """
     Orchestrate parsing and loading for all FastQC zip files and BBDuk
@@ -1697,6 +2026,35 @@ def mother(conn, librootfolder: str) -> None:
     if meta_data_id is None:
         return
     
+
+       # --- AdapterRemoval settings ---
+    path_pattern = str(Path(librootfolder) / "stats/reads/trim/*.settings")
+    file_paths = glob.glob(path_pattern)
+
+    if not file_paths:
+        log.warning("No AdapterRemoval settings files found")
+    else:
+        if len(file_paths) > 8:
+            log.warning("Expected at most 8 AdapterRemoval settings files, found %s", len(file_paths))
+
+        log.info("Processing %s AdapterRemoval settings file(s)", len(file_paths))
+
+        for settings_path in file_paths:
+            log.info("Processing: %s", settings_path)
+
+            try:
+                data = parse_adapterremoval_settings(settings_path)
+
+                if data is None:
+                    log.warning("Skipping invalid AdapterRemoval settings file: %s", settings_path)
+                    continue
+
+                loader.load_adapterremoval_settings(data)
+
+            except Exception as e:
+                log.exception("Failed to process AdapterRemoval settings %s: %s", settings_path, e)
+                conn.rollback()
+    
         
     
     
@@ -1710,18 +2068,22 @@ def mother(conn, librootfolder: str) -> None:
         log.info(f"Processing {len(files)} FastQC file(s)")
 
         for zip_path in files:
-            log.info(f"Processing FastQC: {zip_path}")
             try:
+                log.info(f"Processing: {zip_path}")
                 # 1. Extract metadata from the path
                 meta = extract_fastqc_path_metadata(zip_path)
 
                 # 2. Parse the file contents
                 fh   = open_fastqc_zip(zip_path)
                 data = parse_fastqc_file(fh)
+                if not include_per_tile_quality:
+                    data.pop("per_tile_quality", None)
+                    data["module_statuses"].pop("Per tile sequence quality", None)
 
                 # 3. Merge — path metadata wins on conflict (e.g. library_id)
                 data["source_file"] = zip_path
                 data.update(meta)
+                
 
                 required_bs = {
                     "Filename",
@@ -1805,7 +2167,7 @@ def mother(conn, librootfolder: str) -> None:
         log.info(f"Processing {len(file_paths)} nonpareil tsv file(s)")
 
         for ele in file_paths:
-            log.info(f"Processing Nonpareil tsv: {ele}")
+            log.info(f"Processing {ele}")
             try:
                 data = extract_nonpareil_stats(ele)
                 loader.load_nonpareil(data)
@@ -1826,7 +2188,7 @@ def mother(conn, librootfolder: str) -> None:
         log.info(f"Processing {len(file_paths)} derep log file(s)")
 
         for ele in file_paths:
-            log.info(f"Processing Derep log: {ele}")
+            log.info(f"Processing {ele}")
             try:
                 data = parse_derep_log(ele)
                 
@@ -1849,8 +2211,10 @@ def mother(conn, librootfolder: str) -> None:
         if len(file_paths) != 2:
             log.warning(f"Expected 2 samtools stats files, found {len(file_paths)}")
 
+        log.info(f"Processing {len(file_paths)} samtools stats file(s)")
+
         for ele in file_paths:
-            log.info(f"Processing samtools stats file: {ele}")
+            log.info(f"Processing: {ele}")
             try:
                 meta_data = parse_samtools_metadata(ele)
                 data = parse_samtools_stats(ele)
@@ -1860,13 +2224,22 @@ def mother(conn, librootfolder: str) -> None:
             except Exception as e:
                 log.exception(f"Failed to process Samtools stats: {e}")
                 conn.rollback()
-            
+
+ 
                 
+                    
     
                 
                 
 
+def confirm_delete(librootfolder: str) -> bool:
+    print()
+    print("WARNING: You are about to delete database records.")
+    print(f"Library root folder: {librootfolder}")
+    print()
+    answer = input("Type DELETE to confirm: ")
 
+    return answer == "DELETE"
 
 # ---------------------------------------------------------------------------
 # Entry point
@@ -1900,11 +2273,21 @@ def main():
         help="Path to a single library root folder "
              "(e.g. /datasets/caeg_production/libraries/LV7/008/891/LV7008891944/20260401_A23JH5FLT4/v1.0.8/<hash>/)"
     )
+    parser.add_argument(
+    "--delete",
+    action="store_true",
+    help="Delete records for the given --librootfolder instead of uploading them",
+)
     parser.add_argument("--host",     default="localhost")
     parser.add_argument("--port",     type=int, default=5432)
     parser.add_argument("--dbname",   required=True)
     parser.add_argument("--user",     required=True)
     parser.add_argument("--password", default="")
+    parser.add_argument(
+    "--include-per-tile-quality",
+    action="store_true",
+    help="Include parsing/uploading the FastQC Per tile sequence quality module",
+)
 
     args = parser.parse_args()
 
@@ -1915,7 +2298,24 @@ def main():
     )
 
     try:
-        mother(conn, args.librootfolder)
+        loader = QCDatabaseLoader(conn)
+        if args.delete:
+
+            meta = extract_root_path_metadata(args.librootfolder)
+
+            if validate_root_metadata(meta, args.librootfolder):
+                loader.delete_metadata_record(
+                    library_id=meta["library_id"],
+                    flowcell_id=meta["flowcell_id"],
+                    pipeline_version=meta["pipeline_version"],
+                    pipeline_hash=meta["pipeline_hash"],
+                )
+        else:
+            mother(
+    conn,
+    args.librootfolder,
+    include_per_tile_quality=args.include_per_tile_quality,
+)
     except Exception:
         log.exception("Fatal error during processing")
     finally:
