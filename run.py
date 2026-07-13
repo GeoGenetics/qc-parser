@@ -354,7 +354,7 @@ class QCDatabaseLoader:
             table_name=table_name,
             pk_columns=unique_key_columns,
             row=data,
-            returning_columns=["id"],
+            returning_columns=["settings_id"],
         )
 
         if result is None:
@@ -362,7 +362,7 @@ class QCDatabaseLoader:
             log.error("AdapterRemoval settings upload failed for: %s", data.get("source_file"))
             return None
 
-        settings_id = result["id"]
+        settings_id = result["settings_id"]
 
         child_table_name = self.get_table_name("adapterremoval.length_distribution")
         child_unique_key_columns = self.get_constraint_columns(
