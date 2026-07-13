@@ -40,20 +40,20 @@ def normalize_value(value):
         return value
 
 class QCDatabaseLoader:
-    FASTQC_CHILD_TABLE_IDS = [
-        "fastqc.module_status",
-        "fastqc.per_base_quality",
-        "fastqc.per_tile_quality",
-        "fastqc.per_sequence_quality",
-        "fastqc.per_base_sequence_content",
-        "fastqc.per_sequence_gc_content",
-        "fastqc.per_base_n_content",
-        "fastqc.sequence_length_distribution",
-        "fastqc.sequence_duplication_levels",
-        "fastqc.overrepresented_sequences",
-        "fastqc.kmer_content",
-        "fastqc.adapter_content",
-    ]
+    FASTQC_CHILD_TABLE_IDS = {
+        "module_statuses": "fastqc.module_status",
+        "per_base_quality": "fastqc.per_base_quality",
+        "per_tile_quality": "fastqc.per_tile_quality",
+        "per_sequence_quality": "fastqc.per_sequence_quality",
+        "per_base_sequence_content": "fastqc.per_base_sequence_content",
+        "per_sequence_gc_content": "fastqc.per_sequence_gc_content",
+        "per_base_n_content": "fastqc.per_base_n_content",
+        "sequence_length_distribution": "fastqc.sequence_length_distribution",
+        "sequence_duplication_levels": "fastqc.sequence_duplication_levels",
+        "overrepresented_sequences": "fastqc.overrepresented_sequences",
+        "kmer_content": "fastqc.kmer_content",
+        "adapter_content": "fastqc.adapter_content",
+    }
 
     def __init__(self, conn, table_ids_path: str | Path | None = None):
         self.conn = conn
@@ -453,7 +453,7 @@ class QCDatabaseLoader:
 
     def delete_fastqc_children(self, file_id: int) -> None:
         with self.conn.cursor() as cur:
-            for table_id in self.FASTQC_CHILD_TABLE_IDS:
+            for table_id in self.FASTQC_CHILD_TABLE_IDS.values():
                 table = self.get_table_name(table_id)
                 cur.execute(
                     sql.SQL("DELETE FROM {} WHERE file_id = %s").format(
@@ -469,7 +469,7 @@ class QCDatabaseLoader:
         unique_key_columns = self.get_constraint_columns(
             table_name=table_name,
             key_type="UNIQUE",
-            constraint_name="fastqc_files_unique",
+            constraint_name="fastqc_stats_unique",
         )
         
         pk = self.get_constraint_columns(
@@ -477,7 +477,7 @@ class QCDatabaseLoader:
         
         foreign_key_columns = self.get_constraint_columns(
             table_name=table_name,
-            constraint_name="fastqc_files_meta_data_fk",
+            constraint_name="fastqc_stats_meta_data_fk",
             key_type="FOREIGN KEY"
         )
         
@@ -507,7 +507,7 @@ class QCDatabaseLoader:
             row=meta_data,
             table_name=table_name,
             pk_columns=unique_key_columns,
-            returning_columns=["id"],
+            returning_columns=["fastqc_stats_id"],
         )
         module_statuses = data.get("module_statuses")
         module_statuses = [{'module_name': k, 'status': v} for k, v in module_statuses.items()]
@@ -515,10 +515,11 @@ class QCDatabaseLoader:
 
         child_data = {k: v for k, v in data.items() if k not in meta_data and k not in ["basic_statistics"]}
         
-        for child_id, rows in child_data.items():
-            child_table = self.get_table_name(f"fastqc.{child_id}")
+        for child_key, rows in child_data.items():
+            table_id = self.FASTQC_CHILD_TABLE_IDS[child_key]
+            child_table = self.get_table_name(table_id)
 
-            constraint_name = f"fastqc_{child_id}_unique"
+            constraint_name = f"{table_id.replace('.', '_')}_unique"
             
             unique_key_columns = self.get_constraint_columns(
                 table_name=child_table,
