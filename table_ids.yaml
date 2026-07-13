@@ -1,0 +1,23 @@
+# Keys are stable application IDs. Values are current PostgreSQL table names.
+# When a table is renamed, change only its value and keep its ID unchanged.
+tables:
+  adapterremoval.settings: adapter_removal_settings
+  adapterremoval.length_distribution: adapter_removal_length_distribution
+  samtools.stats: samtools_stats
+  metadata: meta_data
+  fastqc.report: fastqc_stats
+  fastqc.module_status: fastqc_module_status
+  fastqc.per_base_quality: fastqc_per_base_quality
+  fastqc.per_tile_quality: fastqc_per_tile_quality
+  fastqc.per_sequence_quality: fastqc_per_sequence_quality
+  fastqc.per_base_sequence_content: fastqc_per_base_sequence_content
+  fastqc.per_sequence_gc_content: fastqc_per_sequence_gc_content
+  fastqc.per_base_n_content: fastqc_per_base_n_content
+  fastqc.sequence_length_distribution: fastqc_sequence_length_distribution
+  fastqc.sequence_duplication_levels: fastqc_sequence_duplication_levels
+  fastqc.overrepresented_sequences: fastqc_overrepresented_sequences
+  fastqc.kmer_content: fastqc_kmer_content
+  fastqc.adapter_content: fastqc_adapter_content
+  nonpareil.summary: non_pareil
+  bbduk.low_complexity: bbduk_low_complexity
+  derep.summary: derep

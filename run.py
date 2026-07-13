@@ -40,24 +40,51 @@ def normalize_value(value):
         return value
 
 class QCDatabaseLoader:
-    FASTQC_CHILD_TABLES = [
-        "fastqc_module_status",
-        "fastqc_per_base_quality",
-        "fastqc_per_tile_quality",
-        "fastqc_per_sequence_quality",
-        "fastqc_per_base_sequence_content",
-        "fastqc_per_sequence_gc_content",
-        "fastqc_per_base_n_content",
-        "fastqc_sequence_length_distribution",
-        "fastqc_sequence_duplication_levels",
-        "fastqc_overrepresented_sequences",
-        "fastqc_kmer_content",
-        "fastqc_adapter_content",
+    FASTQC_CHILD_TABLE_IDS = [
+        "fastqc.module_status",
+        "fastqc.per_base_quality",
+        "fastqc.per_tile_quality",
+        "fastqc.per_sequence_quality",
+        "fastqc.per_base_sequence_content",
+        "fastqc.per_sequence_gc_content",
+        "fastqc.per_base_n_content",
+        "fastqc.sequence_length_distribution",
+        "fastqc.sequence_duplication_levels",
+        "fastqc.overrepresented_sequences",
+        "fastqc.kmer_content",
+        "fastqc.adapter_content",
     ]
 
-    def __init__(self, conn):
+    def __init__(self, conn, table_ids_path: str | Path | None = None):
         self.conn = conn
         self._constraint_cache = {}
+
+        path = (
+            Path(table_ids_path)
+            if table_ids_path
+            else Path(__file__).with_name("table_ids.yaml")
+        )
+        with path.open(encoding="utf-8") as filehandle:
+            table_ids = yaml.safe_load(filehandle)["tables"]
+
+        if len(table_ids) != len(set(table_ids.values())):
+            raise ValueError(f"Table names must be unique in {path}")
+
+        invalid_names = [
+            name
+            for name in table_ids.values()
+            if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name)
+        ]
+        if invalid_names:
+            raise ValueError(f"Invalid table name(s) in {path}: {', '.join(invalid_names)}")
+
+        self._table_names = table_ids
+
+    def get_table_name(self, table_id: str) -> str:
+        try:
+            return self._table_names[table_id]
+        except KeyError as error:
+            raise ValueError(f"Unknown table ID: {table_id}") from error
         
     def get_constraint_columns(
         self,
@@ -277,16 +304,18 @@ class QCDatabaseLoader:
     pipeline_version: str,
     pipeline_hash: str,
 ) -> bool:
+        table_name = self.get_table_name("metadata")
+
         try:
             with self.conn.cursor() as cur:
                 cur.execute(
-                    """
-                    DELETE FROM meta_data
+                    sql.SQL("""
+                    DELETE FROM {}
                     WHERE library_id = %s
                     AND flowcell_id = %s
                     AND pipeline_version = %s
                     AND pipeline_hash = %s
-                    """,
+                    """).format(sql.Identifier(table_name)),
                     (
                         library_id,
                         flowcell_id,
@@ -300,10 +329,10 @@ class QCDatabaseLoader:
             self.conn.commit()
 
             if deleted == 0:
-                log.warning("No matching meta_data record found")
+                log.warning("No matching %s record found", table_name)
                 return False
 
-            log.info("Deleted meta_data record and cascading child records")
+            log.info("Deleted %s record and cascading child records", table_name)
             return True
 
         except Exception:
@@ -313,15 +342,16 @@ class QCDatabaseLoader:
         
     def load_adapterremoval_settings(self, data: dict) -> int | None:
         length_distribution = data.pop("length_distribution", [])
+        table_name = self.get_table_name("adapterremoval.settings")
 
         unique_key_columns = self.get_constraint_columns(
-            table_name="adapter_removal_settings",
+            table_name=table_name,
             constraint_name="adapter_removal_settings_unique",
             key_type="UNIQUE",
         )
 
         result = self.upsert_row(
-            table_name="adapter_removal_settings",
+            table_name=table_name,
             pk_columns=unique_key_columns,
             row=data,
             returning_columns=["id"],
@@ -334,8 +364,9 @@ class QCDatabaseLoader:
 
         settings_id = result["id"]
 
+        child_table_name = self.get_table_name("adapterremoval.length_distribution")
         child_unique_key_columns = self.get_constraint_columns(
-            table_name="adapter_removal_length_distribution",
+            table_name=child_table_name,
             constraint_name="adapter_removal_length_distribution_unique",
             key_type="UNIQUE",
         )
@@ -344,7 +375,7 @@ class QCDatabaseLoader:
             row["settings_id"] = settings_id
 
             sub_result = self.upsert_row(
-                table_name="adapter_removal_length_distribution",
+                table_name=child_table_name,
                 pk_columns=child_unique_key_columns,
                 row=row,
                 log_all=False,
@@ -364,14 +395,15 @@ class QCDatabaseLoader:
             
 
     def load_samtools_stats(self, data: dict) -> int | None:  
+        table_name = self.get_table_name("samtools.stats")
         unique_key_columns = self.get_constraint_columns(
-            table_name="samtools_stats",
+            table_name=table_name,
             constraint_name="samtools_stats_library_id_flowcell_id_pipeline_version_pipe_key",
             key_type="UNIQUE",
         )
                 
         result = self.upsert_row(
-            table_name="samtools_stats",
+            table_name=table_name,
             pk_columns=unique_key_columns,
             row=data,
         )
@@ -392,13 +424,14 @@ class QCDatabaseLoader:
 
 
     def load_metadata(self, data: dict) -> int | None:  
+        table_name = self.get_table_name("metadata")
         unique_key_columns = self.get_constraint_columns(
-            table_name="meta_data",
+            table_name=table_name,
             constraint_name="meta_data_pk",
         )
                 
         result = self.upsert_row(
-            table_name="meta_data",
+            table_name=table_name,
             pk_columns=unique_key_columns,
             row=data,
         )
@@ -420,23 +453,30 @@ class QCDatabaseLoader:
 
     def delete_fastqc_children(self, file_id: int) -> None:
         with self.conn.cursor() as cur:
-            for table in self.FASTQC_CHILD_TABLES:
-                cur.execute(f"DELETE FROM {table} WHERE file_id = %s", (file_id,))
+            for table_id in self.FASTQC_CHILD_TABLE_IDS:
+                table = self.get_table_name(table_id)
+                cur.execute(
+                    sql.SQL("DELETE FROM {} WHERE file_id = %s").format(
+                        sql.Identifier(table)
+                    ),
+                    (file_id,),
+                )
                 
     def load_fastqc_data(self, data: dict) -> int | None:
         bs = data["basic_statistics"]
+        table_name = self.get_table_name("fastqc.report")
         
         unique_key_columns = self.get_constraint_columns(
-            table_name="fastqc",
+            table_name=table_name,
             key_type="UNIQUE",
             constraint_name="fastqc_files_unique",
         )
         
         pk = self.get_constraint_columns(
-            table_name="fastqc")
+            table_name=table_name)
         
         foreign_key_columns = self.get_constraint_columns(
-            table_name="fastqc",
+            table_name=table_name,
             constraint_name="fastqc_files_meta_data_fk",
             key_type="FOREIGN KEY"
         )
@@ -463,7 +503,6 @@ class QCDatabaseLoader:
             "flowcell_position": data.get("flowcell_position"),
         }
 
-        table_name = 'fastqc'
         result = self.upsert_row(
             row=meta_data,
             table_name=table_name,
@@ -476,10 +515,10 @@ class QCDatabaseLoader:
 
         child_data = {k: v for k, v in data.items() if k not in meta_data and k not in ["basic_statistics"]}
         
-        for child_table, rows in child_data.items():
-            child_table = 'fastqc_' + child_table
+        for child_id, rows in child_data.items():
+            child_table = self.get_table_name(f"fastqc.{child_id}")
 
-            constraint_name = f"{child_table}_unique"
+            constraint_name = f"fastqc_{child_id}_unique"
             
             unique_key_columns = self.get_constraint_columns(
                 table_name=child_table,
@@ -559,15 +598,16 @@ class QCDatabaseLoader:
         return result
     
     def load_nonpareil(self, data: list) -> int | None:
+        table_name = self.get_table_name("nonpareil.summary")
         unique_key_columns = self.get_constraint_columns(
-            table_name="non_pareil",
+            table_name=table_name,
             constraint_name="non_pareil_unique",
             key_type="UNIQUE",
         )
         
         for row in data:
             result = self.upsert_row(
-                table_name="non_pareil",
+                table_name=table_name,
                 pk_columns=unique_key_columns,
                 row=row,
             )
@@ -588,14 +628,15 @@ class QCDatabaseLoader:
     
                 
     def load_bbduk(self, data: dict) -> int | None:
+        table_name = self.get_table_name("bbduk.low_complexity")
         unique_key_columns = self.get_constraint_columns(
-            table_name="bbduk_low_complexity",
+            table_name=table_name,
             constraint_name="bbduk_low_complexity_source_file_key",
             key_type="UNIQUE",
         )
                 
         result = self.upsert_row(
-            table_name="bbduk_low_complexity",
+            table_name=table_name,
             pk_columns=unique_key_columns,
             row=data,
         )
@@ -616,8 +657,9 @@ class QCDatabaseLoader:
         return result
     
     def load_derep_log(self, data: list) -> int | None:
+        table_name = self.get_table_name("derep.summary")
         unique_key_columns = self.get_constraint_columns(
-            table_name="derep",
+            table_name=table_name,
             constraint_name="derep_unique",
             key_type="UNIQUE",
         )
@@ -625,7 +667,7 @@ class QCDatabaseLoader:
         results = []
         for row in data:
             result = self.upsert_row(
-                table_name="derep",
+                table_name=table_name,
                 pk_columns=unique_key_columns,
                 row=row,
             )
@@ -970,16 +1012,18 @@ def delete_metadata_record(
     pipeline_version: str,
     pipeline_hash: str,
 ) -> bool:
+    table_name = self.get_table_name("metadata")
+
     try:
         with self.conn.cursor() as cur:
             cur.execute(
-                """
-                DELETE FROM meta_data
+                sql.SQL("""
+                DELETE FROM {}
                 WHERE library_id = %s
                   AND flowcell_id = %s
                   AND pipeline_version = %s
                   AND pipeline_hash = %s
-                """,
+                """).format(sql.Identifier(table_name)),
                 (library_id, flowcell_id, pipeline_version, pipeline_hash),
             )
 
@@ -988,10 +1032,10 @@ def delete_metadata_record(
         self.conn.commit()
 
         if deleted == 0:
-            log.warning("No matching meta_data record found")
+            log.warning("No matching %s record found", table_name)
             return False
 
-        log.info("Deleted meta_data record and cascading children")
+        log.info("Deleted %s record and cascading children", table_name)
         return True
 
     except Exception:
