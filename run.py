@@ -492,7 +492,6 @@ class QCDatabaseLoader:
             "sequence_length": bs.get("Sequence length"),
             "gc_percent": int(bs["%GC"]) if "%GC" in bs else None,
             "library_id": data.get("library_id"),
-            "sequencing_date": data.get("sequencing_date"),
             "flowcell_id": data.get("flowcell_id"),
             "pipeline_version": data.get("pipeline_version"),
             "pipeline_hash": data.get("pipeline_hash"),
@@ -500,7 +499,6 @@ class QCDatabaseLoader:
             "lane": data.get("lane"),
             "read_type": data.get("read_type"),
             "fastqc_version": data.get("fastqc_version"),
-            "flowcell_position": data.get("flowcell_position"),
         }
 
         result = self.upsert_row(
@@ -786,14 +784,12 @@ def extract_fastqc_path_metadata(zip_path: str) -> dict:
 
     return {
         "library_id":            library_id,
-        "sequencing_date":         sequencing_date,
         "flowcell_id":         flowcell_id,
         "pipeline_version": pipeline_version,
         "pipeline_hash":    pipeline_hash,
         "data_type":        data_type,
         "lane":             lane,
         "read_type":        read_type,
-        "flowcell_position": flowcell_position,
     }
     
 def validate_regex(
@@ -1898,7 +1894,7 @@ def parse_adapterremoval_settings(path: str | Path) -> dict:
 
     result = {
     **meta,
-    "adapterremoval_version": None,
+    "adapter_removal_version": None,
     "mode": None,
     "length_distribution": [],
 }
@@ -1914,7 +1910,7 @@ def parse_adapterremoval_settings(path: str | Path) -> dict:
                 continue
 
             if line.startswith("AdapterRemoval ver."):
-                result["adapterremoval_version"] = line.replace("AdapterRemoval ver.", "").strip()
+                result["adapter_removal_version"] = line.replace("AdapterRemoval ver.", "").strip()
                 continue
 
             if line == "Trimming of paired-end reads":

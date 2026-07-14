@@ -4,7 +4,7 @@ tables:
   adapterremoval.settings: adapter_removal_settings
   adapterremoval.length_distribution: adapter_removal_length_distribution
   samtools.stats: samtools_stats
-  metadata: meta_data
+  metadata: qc_run
   fastqc.report: fastqc_stats
   fastqc.module_status: fastqc_module_status
   fastqc.per_base_quality: fastqc_per_base_quality
@@ -18,6 +18,6 @@ tables:
   fastqc.overrepresented_sequences: fastqc_overrepresented_sequences
   fastqc.kmer_content: fastqc_kmer_content
   fastqc.adapter_content: fastqc_adapter_content
-  nonpareil.summary: non_pareil
-  bbduk.low_complexity: bbduk_low_complexity
-  derep.summary: derep
+  nonpareil.summary: nonpareil_stats
+  bbduk.low_complexity: bbduk_stats
+  derep.summary: derep_stats
