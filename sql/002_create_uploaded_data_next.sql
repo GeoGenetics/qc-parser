@@ -77,7 +77,12 @@ CREATE TABLE uploaded_data_next.library_lane_assignment (
         ON DELETE RESTRICT,
 
     CONSTRAINT library_lane_assignment_unique
-        UNIQUE (library_id, flowcell_lane_id)
+        UNIQUE (library_id, flowcell_lane_id),
+
+    -- Supports composite foreign keys that guarantee an artifact and lane
+    -- assignment belong to the same library.
+    CONSTRAINT library_lane_assignment_id_library_unique
+        UNIQUE (assignment_id, library_id)
 );
 
 CREATE INDEX flowcell_lane_flowcell_idx
