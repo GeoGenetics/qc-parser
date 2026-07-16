@@ -1,0 +1,16 @@
+erDiagram
+    FILE }|--|{ PIPELINE : "is input to"
+    PIPELINE ||--|{ OUTPUT_FILE : "produces"
+
+    FILE {
+        string file_id PK
+    }
+
+    PIPELINE {
+        string pipeline_id PK
+    }
+
+    OUTPUT_FILE {
+        string output_file_id PK
+        string pipeline_id FK
+    }

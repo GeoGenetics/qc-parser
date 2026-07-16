@@ -1,0 +1,34 @@
+# File, process, and output file — relational implementation
+
+```mermaid
+erDiagram
+    FILE ||--|{ PROCESS_INPUT : "is used as"
+    PROCESS ||--|{ PROCESS_INPUT : "receives"
+
+    PROCESS ||--|{ PROCESS_OUTPUT : "generates"
+    OUTPUT_FILE ||--|{ PROCESS_OUTPUT : "is registered as"
+
+    FILE {
+        string file_id PK
+    }
+
+    PROCESS {
+        string process_id PK
+    }
+
+    OUTPUT_FILE {
+        string output_file_id PK
+    }
+
+    PROCESS_INPUT {
+        string process_id PK, FK
+        string file_id PK, FK
+    }
+
+    PROCESS_OUTPUT {
+        string process_id PK, FK
+        string output_file_id PK, FK
+    }
+```
+
+The two many-to-many relationships are implemented using junction tables.

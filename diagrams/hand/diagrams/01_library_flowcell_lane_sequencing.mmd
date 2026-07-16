@@ -1,0 +1,39 @@
+erDiagram
+    POOL ||--|{ FLOWCELL_LANE : "is sequenced on"
+
+    LIBRARY ||--|{ LIBRARY_FLOWCELL_LANE : "has"
+    FLOWCELL_LANE ||--|{ LIBRARY_FLOWCELL_LANE : "contains"
+
+    LIBRARY_FLOWCELL_LANE ||--|{ SEQUENCING_READ : "produces"
+    SEQUENCING_READ ||--|| FASTQ_FILE : "is stored as"
+
+    LIBRARY {
+        string library_id PK
+    }
+
+    POOL {
+        string pool_id PK
+    }
+
+    FLOWCELL_LANE {
+        string flowcell_lane_id PK
+        string pool_id FK
+    }
+
+    LIBRARY_FLOWCELL_LANE {
+        string library_id PK, FK
+        string flowcell_lane_id PK, FK
+    }
+
+    SEQUENCING_READ {
+        string sequencing_read_id PK
+        string library_id FK
+        string flowcell_lane_id FK
+        string read_direction "R1 or R2"
+    }
+
+    FASTQ_FILE {
+        string fastq_file_id PK
+        string sequencing_read_id FK
+        string file_path
+    }

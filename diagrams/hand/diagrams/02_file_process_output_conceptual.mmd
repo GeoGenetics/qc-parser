@@ -1,0 +1,15 @@
+erDiagram
+    FILE }|--|{ PROCESS : "is input to"
+    PROCESS }|--|{ OUTPUT_FILE : "produces"
+
+    FILE {
+        string file_id PK
+    }
+
+    PROCESS {
+        string process_id PK
+    }
+
+    OUTPUT_FILE {
+        string output_file_id PK
+    }
