@@ -14,7 +14,7 @@ erDiagram
     FASTQ_TYPE ||--o{ FASTQC : ""
 
     SEQUENCING_LOOKUP ||--o{ STAT_LOOKUP : ""
-
+    POOL_LIBRARY_MAPPING ||--|| XIHAN_DATA : ""
     
     LIBRARY {
         int lv_id PK
@@ -27,7 +27,9 @@ erDiagram
     }
 
     LANE {
-        int lane_number PK
+        int lane_id PK
+        int fc_id FK
+        int lane_number 
     }
 
     POOL {
@@ -42,6 +44,7 @@ erDiagram
         int lv_id FK "CUK NOT NULL"        
 }
 
+
     PV {
         int pv_id PK
         text pv UK
@@ -55,8 +58,7 @@ erDiagram
 
     SEQUENCING_LOOKUP {
         int seql_id PK
-        int lane_number FK 
-        int fc_id FK
+        int lane_id FK 
         string lv_id FK
 }
 
