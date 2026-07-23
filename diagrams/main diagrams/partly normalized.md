@@ -71,7 +71,9 @@ QUESTIONS:
 5. Where is read type specified (R1, R2, singleton, discarded, read_collapse)?
 6. Do we need to distinguish 2 executions of the same pipeline version and configuration?
 7. How to link to the rest of the SMDB and validate library-flowcell-lane combinations are correct? And how to link to julie data for example?
-8. How to know which files were used to generate a stat? Or used to generate other files? In other words, how to track the provencance for files? Maybe its not important. Maybe it will be important in the future. For example if we need to model merging of X lanes, we need to know which lane files were merged into one file. 
+8. How to know which files were used to generate a stat? Or used to generate other files? In other words, how to track the provencance for files? Maybe its not important. Maybe it will be important in the future. For example if we need to model merging of X lanes, we need to know which lane files were merged into one file.
+9. For merged data: How to know which lanes contributed to the merge?
+10. how to validate that a flowcell has the correct number of lanes?
 
 Conclusion:
 It needs a way to identify which tool created which stat? derep/seqkit, merge_lanes, fastqc etc. 
