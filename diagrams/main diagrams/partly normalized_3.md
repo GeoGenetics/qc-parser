@@ -1,20 +1,20 @@
+NOTES:
+SEQUENCING could  be more normalized. Lane merge issue potentially fixed by having seperate lane in stat file table and sequencing table. 
+
 ```mermaid
 erDiagram
-    LIBRARY ||--|{ SEQUENCING_LOOKUP : ""
+    LIBRARY ||--|{ SEQUENCING : ""
     FC ||--|{ LANE : ""
-    LANE ||--|{ SEQUENCING_LOOKUP : ""
-    PV ||--|{ STAT_LOOKUP : ""
-    PH ||--|{ STAT_LOOKUP : ""
-    POOL ||--o{ LANE : ""
-    POOL ||--|{ POOL_LIBRARY_MAPPING : ""
-    LIBRARY ||--|{ POOL_LIBRARY_MAPPING : ""
+    LANE ||--|{ SEQUENCING : ""
+    PV ||--|{ PIPELINE_RUN : ""
+    PH ||--|{ PIPELINE_RUN : ""    
+
+    PIPELINE_RUN ||--o{ STAT_FILE : ""
+
+    LIBRARY ||--o{ PIPELINE_RUN : ""
+    SEQUENCING ||--|| XIHAN_DATA : ""
+    SEQUENCING ||--|| POOL : ""
     
-
-    STAT_LOOKUP ||--o{ FASTQC : ""
-    FASTQ_TYPE ||--o{ FASTQC : ""
-
-    SEQUENCING_LOOKUP ||--o{ STAT_LOOKUP : ""
-    POOL_LIBRARY_MAPPING ||--|| XIHAN_DATA : ""
     
     LIBRARY {
         int lv_id PK
@@ -35,15 +35,7 @@ erDiagram
     POOL {
         int pool_id PK
         text pool_label UK
-        int lane_id FK
     }
-
-    POOL_LIBRARY_MAPPING {
-        int plm_id PK
-        int pool_id FK "CUK NOT NULL"
-        int lv_id FK "CUK NOT NULL"        
-}
-
 
     PV {
         int pv_id PK
@@ -56,40 +48,37 @@ erDiagram
         json config
     }
 
-    SEQUENCING_LOOKUP {
-        int seql_id PK
+    SEQUENCING {
+        int seq_id PK
         int lane_id FK 
+        int pool_id FK
         string lv_id FK
 }
 
-    STAT_LOOKUP {
-        int stl_id PK
-        int seql_id FK
+    PIPELINE_RUN {
+        int pr_id PK
+        int lib_id FK
         int pv_id FK
         int ph_id FK
-        string seq_type "collapsed, singleton, r1, r2 etc.."
-        string processing_type "raw, trim, derep, merge_lanes etc."
-        string stat_tool "fastqc etc."
+    }
+
+    STAT_FILE {
+        int sf_id PK
+        int pr_id FK
+        string seq_type "CUK; collapsed, singleton, r1, r2 etc.."
+        string processing_type "CUK; raw, trim, derep, merge_lanes etc."
+        string stat_tool "CUK; fastqc etc."
+        string file_path UK
+        string lane "idenpendent from seq lane"
     }
 
 STAT_SEQ_MAPPING {
     int ssm_id PK
     int sl_id FK
-    int stl_id FK
+    int pr_id FK
 }
 
 
-    FASTQ_TYPE {
-        int fastq_type_id PK
-        text fastq_type UK
-    }
-
-    FASTQC {
-        int fastqc_id PK
-        int lookup_id FK
-        int fastq_type_id FK
-        text fastqc_path
-    }
 
 ```
 
