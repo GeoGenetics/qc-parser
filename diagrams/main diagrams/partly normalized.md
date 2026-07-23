@@ -39,7 +39,7 @@ erDiagram
     POOL_LIBRARY_MAPPING {
         int plm_id PK
         int pool_id FK "CUK NOT NULL"
-        int library_id FK "CUK NOT NULL"        
+        int lv_id FK "CUK NOT NULL"        
 }
 
     PV {
@@ -54,14 +54,15 @@ erDiagram
     }
 
     SEQUENCING_LOOKUP {
-        int sl_id PK
+        int seql_id PK
         int lane_number FK 
         int fc_id FK
-        string library_id FK
+        string lv_id FK
 }
 
     STAT_LOOKUP {
         int stl_id PK
+        int seql_id FK
         int pv_id FK
         int ph_id FK
         string seq_type "collapsed, singleton, r1, r2 etc.."
