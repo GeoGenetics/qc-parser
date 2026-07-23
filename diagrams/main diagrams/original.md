@@ -25,11 +25,6 @@ erDiagram
         text lane UK
     }
 
-    POOL {
-        int pool_id PK
-        text pool_label UK
-    }
-
     PV {
         int pv_id PK
         text pv UK
