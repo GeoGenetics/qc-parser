@@ -1,19 +1,22 @@
 ```mermaid
 erDiagram
-    LV ||--|{ SEQUENCING_LOOKUP : "used in"
+    LIBRARY ||--|{ SEQUENCING_LOOKUP : ""
     FC ||--|{ LANE : ""
     LANE ||--|{ SEQUENCING_LOOKUP : ""
-    PV ||--|{ PIPELINE_LOOKUP : "used in"
-    PH ||--|{ PIPELINE_LOOKUP : "used in"
+    PV ||--|{ PIPELINE_LOOKUP : ""
+    PH ||--|{ PIPELINE_LOOKUP : ""
     POOL ||--o{ LANE : ""
+    POOL ||--|{ POOL_LIBRARY_MAPPING : ""
+    LIBRARY ||--|{ POOL_LIBRARY_MAPPING : ""
+    
 
-    PIPELINE_LOOKUP ||--o{ FASTQC : "identifies"
-    FASTQ_TYPE ||--o{ FASTQC : "classifies"
+    PIPELINE_LOOKUP ||--o{ FASTQC : ""
+    FASTQ_TYPE ||--o{ FASTQC : ""
 
     SEQUENCING_LOOKUP ||--o{ PIPELINE_LOOKUP : ""
 
     
-    LV {
+    LIBRARY {
         int lv_id PK
         text lv UK
     }
@@ -25,8 +28,8 @@ erDiagram
 
     LANE {
         int lane_id PK
-        int fc_id FK "CUK"
-        text lane_number "CUK"
+        int fc_id FK "CUK NOT NULL"
+        text lane_number "CUK NOT NULL"
     }
 
     POOL {
@@ -34,6 +37,12 @@ erDiagram
         text pool_label UK
         int lane_id FK
     }
+
+    POOL_LIBRARY_MAPPING {
+        int plm_id PK
+        int pool_id FK "CUK NOT NULL"
+        int library_id FK "CUK NOT NULL"        
+}
 
     PV {
         int pv_id PK
