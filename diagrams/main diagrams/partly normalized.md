@@ -13,7 +13,7 @@ erDiagram
     STAT_LOOKUP ||--o{ FASTQC : ""
     FASTQ_TYPE ||--o{ FASTQC : ""
 
-    SEQUENCING_LOOKUP ||--o{ PIPELINE_LOOKUP : ""
+    SEQUENCING_LOOKUP ||--o{ STAT_LOOKUP : ""
 
     
     LIBRARY {
