@@ -1,15 +1,18 @@
 ```mermaid
 erDiagram
-    LV ||--|{ LOOKUP : "used in"
-    FC ||--|{ LOOKUP : "used in"
-    LANE ||--|{ LOOKUP : "used in"
-    PV ||--|{ LOOKUP : "used in"
-    PH ||--|{ LOOKUP : "used in"
+    LV ||--|{ SEQUENCING_LOOKUP : "used in"
+    FC ||--|{ LANE : ""
+    LANE ||--|{ SEQUENCING_LOOKUP : ""
+    PV ||--|{ PIPELINE_LOOKUP : "used in"
+    PH ||--|{ PIPELINE_LOOKUP : "used in"
+    POOL ||--o{ LANE : ""
 
-    LOOKUP ||--o{ FASTQC : "identifies"
+    PIPELINE_LOOKUP ||--o{ FASTQC : "identifies"
     FASTQ_TYPE ||--o{ FASTQC : "classifies"
-    
 
+    SEQUENCING_LOOKUP ||--o{ PIPELINE_LOOKUP : ""
+
+    
     LV {
         int lv_id PK
         text lv UK
@@ -22,12 +25,14 @@ erDiagram
 
     LANE {
         int lane_id PK
-        text lane UK
+        int fc_id FK "CUK"
+        text lane_number "CUK"
     }
 
     POOL {
         int pool_id PK
         text pool_label UK
+        int lane_id FK
     }
 
     PV {
@@ -38,13 +43,19 @@ erDiagram
     PH {
         int ph_id PK
         text ph UK
+        json config
     }
 
-    LOOKUP {
+    SEQUENCING_LOOKUP {
+int sequencing_context_id PK
+int lane_id FK
+string library_id FK
+
+
+}
+
+    PIPELINE_LOOKUP {
         int lookup_id PK
-        int lv_id FK
-        int fc_id FK
-        int lane_id FK
         int pv_id FK
         int ph_id FK
     }
