@@ -1,7 +1,8 @@
+An idea to fix the lane merge issue. Notice that it is optional in the lookup table. Also the pv and ph are optional because stats from julie does not have any of those associated. A better fix to this would be to define pipeline and sequencing as processes. A process can then either be sequencing/demultiplexing or pipeline processing.
 ```mermaid
 erDiagram
-    PV ||--|{ LOOKUP : ""
-    PH ||--|{ LOOKUP : ""
+    PV |o--|{ LOOKUP : ""
+    PH |o--|{ LOOKUP : ""
     LOOKUP }|--|| FC : ""
 
     POOL ||--|{ POOL_LIBRARY_MAPPING : ""
@@ -29,11 +30,11 @@ erDiagram
 
     LOOKUP {
         int lookup_id PK
-        int lane FK "optional"
-        int fc_id FK "not null"
-        string lv_id FK "not null"
-        int pv_id FK "optional"
-        int ph_id FK "optional"
+        int lane FK 
+        int fc_id FK
+        string lv_id FK 
+        int pv_id FK 
+        int ph_id FK 
     }
 
     POOL {
