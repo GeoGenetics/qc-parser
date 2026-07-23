@@ -1,5 +1,5 @@
 NOTES:
-SEQUENCING could  be more normalized. Lane merge issue potentially fixed by having seperate lane in stat file table and sequencing table. 
+An attempt to normalize pipeline run. SEQUENCING could be more normalized. Lane merge issue potentially fixed by having seperate lane in stat file table and sequencing table. No linked by foreign key, so if changes to lane info happen it will not cascade.
 
 ```mermaid
 erDiagram
