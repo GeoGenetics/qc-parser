@@ -10,7 +10,7 @@ erDiagram
     LIBRARY ||--|{ POOL_LIBRARY_MAPPING : ""
     
 
-    PIPELINE_LOOKUP ||--o{ FASTQC : ""
+    STAT_LOOKUP ||--o{ FASTQC : ""
     FASTQ_TYPE ||--o{ FASTQC : ""
 
     SEQUENCING_LOOKUP ||--o{ PIPELINE_LOOKUP : ""
