@@ -3,8 +3,8 @@ erDiagram
     LIBRARY ||--|{ SEQUENCING_LOOKUP : ""
     FC ||--|{ LANE : ""
     LANE ||--|{ SEQUENCING_LOOKUP : ""
-    PV ||--|{ PIPELINE_LOOKUP : ""
-    PH ||--|{ PIPELINE_LOOKUP : ""
+    PV ||--|{ STAT_LOOKUP : ""
+    PH ||--|{ STAT_LOOKUP : ""
     POOL ||--o{ LANE : ""
     POOL ||--|{ POOL_LIBRARY_MAPPING : ""
     LIBRARY ||--|{ POOL_LIBRARY_MAPPING : ""
@@ -27,9 +27,7 @@ erDiagram
     }
 
     LANE {
-        int lane_id PK
-        int fc_id FK "CUK NOT NULL"
-        text lane_number "CUK NOT NULL"
+        int lane_number PK
     }
 
     POOL {
@@ -56,18 +54,27 @@ erDiagram
     }
 
     SEQUENCING_LOOKUP {
-int sequencing_context_id PK
-int lane_id FK
-string library_id FK
-
-
+        int sl_id PK
+        int lane_number FK 
+        int fc_id FK
+        string library_id FK
 }
 
-    PIPELINE_LOOKUP {
-        int lookup_id PK
+    STAT_LOOKUP {
+        int stl_id PK
         int pv_id FK
         int ph_id FK
+        string seq_type "collapsed, singleton, r1, r2 etc.."
+        string processing_type "raw, trim, derep, merge_lanes etc."
+        string stat_tool "fastqc etc."
     }
+
+STAT_SEQ_MAPPING {
+    int ssm_id PK
+    int sl_id FK
+    int stl_id FK
+}
+
 
     FASTQ_TYPE {
         int fastq_type_id PK
