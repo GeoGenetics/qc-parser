@@ -65,10 +65,10 @@ erDiagram
     STAT_FILE {
         int sf_id PK
         int pr_id FK
-        string seq_type "CUK; collapsed, singleton, r1, r2 etc.."
-        string processing_type "CUK; raw, trim, derep, merge_lanes etc."
-        string stat_tool "CUK; fastqc etc."
-        string file_path UK
+        string seq_type "UK1; collapsed, singleton, r1, r2 etc.."
+        string processing_type "UK1; raw, trim, derep, merge_lanes etc."
+        string stat_tool "UK1; fastqc etc."
+        string file_path "UK2"
         string lane "idenpendent from seq lane"
     }
 
