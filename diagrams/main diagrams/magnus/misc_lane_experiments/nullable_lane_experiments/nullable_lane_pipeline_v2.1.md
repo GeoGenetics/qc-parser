@@ -1,19 +1,21 @@
-An idea to fix the lane merge issue. Notice that it is optional in the lookup table. Also the pv and ph are optional because stats from julie does not have any of those associated. A better fix to this would be to define pipeline and sequencing as processes. A process can then either be sequencing/demultiplexing or pipeline processing.
+  A better fix to this would be to define pipeline and sequencing as processes. A process can then either be sequencing/demultiplexing or pipeline processing.
 ```mermaid
 erDiagram
-    PV |o--|{ LOOKUP : ""
-    PH |o--|{ LOOKUP : ""
+    PIPELINE_VERSION ||--|{ PIPELINE : ""
+    PIPELINE_CONFIG ||--|{ PIPELINE : ""
+    LOOKUP }|--o| PIPELINE : ""
     LOOKUP }|--|| FC : ""
-
-    POOL ||--|{ POOL_LIBRARY_MAPPING : ""
     LIBRARY ||--|{ POOL_LIBRARY_MAPPING : ""
-    LOOKUP }|--o| LANE : ""
-    LOOKUP ||--|{ STAT_FILE : ""
-    LIBRARY ||--|{ LOOKUP : ""
+    RESULT_FILE }|--o| LANE : ""
+    LOOKUP ||--o{ RESULT_FILE : ""
+    RESULT_FILE ||--|{ STAT_FILE : ""
+    LIBRARY ||--o{ LOOKUP : ""
     POOL_LIBRARY_MAPPING ||--|| XIHAN : ""
-    
+    POOL ||--|{ POOL_LIBRARY_MAPPING : ""
+    FILE ||--|| RESULT_FILE : ""
+    FILE ||--|| STAT_FILE : ""
 
-    
+            
     LIBRARY {
         int lv_id PK
         text lv UK
@@ -30,11 +32,9 @@ erDiagram
 
     LOOKUP {
         int lookup_id PK
-        int lane FK 
-        int fc_id FK
-        string lv_id FK 
-        int pv_id FK 
-        int ph_id FK 
+        int fc_id FK "NK"
+        string lv_id FK "NK"
+        int pipeline_id FK "NK"
     }
 
     POOL {
@@ -49,23 +49,45 @@ erDiagram
         int lv_id FK      
 }
 
-    PV {
+    PIPELINE_VERSION {
         int pv_id PK
         text pv UK
     }
 
-    PH {
-        int ph_id PK
-        text ph UK
+    PIPELINE_CONFIG {
+        int config_id PK
+        text config_hash UK
         json config
     }
 
-    STAT_FILE {
-        int lookup_id PK
-        string read_type "R1, R2, collapsed, singleton"  
-        string processing_type "seqkit/derep, merge_lanes etc"
-        string stat_tool "fastqc?"
+    PIPELINE {
+        int pipeline_id
+        int config_id
+        int version_id
     }
+
+    RESULT_FILE {
+        int result_file_id PK, FK
+        int lane FK "NK"
+        int lookup_id FK "NK"
+        string file_type "NK | R1, R2, collapsed, singleton" 
+        string produced_by "seqkit/derep, merge_lanes, trim, raw"
+        bool lanes_merged
+    }
+
+    STAT_FILE {
+        int stat_file_id PK, FK
+        int restult_file_id FK
+        string produced_by "fastqc, nonpareil, derep, demultiplex, merge_lanes"
+    }
+
+    FILE {
+        int file_id PK
+        string file_path UK
+        json file_metadata
+    }
+
+    
 
 
 
