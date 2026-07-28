@@ -359,6 +359,7 @@ erDiagram
     INPUT_TYPE ||--o{ DEREP_STATS : run_on
     INPUT_TYPE ||--o{ NONPAREIL_STATS : run_on
     INPUT_TYPE ||--o{ SAMTOOLS_STATS : run_on
+    INPUT_TYPE ||--o{ ADAPTER_REMOVAL_SETTINGS : run_on
 
     ADAPTER_REMOVAL_SETTINGS ||--o{ ADAPTER_REMOVAL_LENGTH_DISTRIBUTION : has
     FASTQC_STATS ||--o{ FASTQC_MODULE_STATUS : has
@@ -421,6 +422,7 @@ flowchart LR
         IT --> NEWDEREP
         IT --> NEWNONP
         IT --> NEWSAM
+        IT --> NEWADAPT
     end
 ```
 
@@ -450,11 +452,11 @@ My recommendation is:
 2. introduce `flowcell`
 3. introduce `pipeline`
 4. introduce `qc_run`
-5. introduce an input-layer for concrete analysis targets
+5. use `input_type` as the shared way to describe what a tool was run on
 6. migrate tool-level tables to reference `qc_run_id`
 7. add input references where you need to know exactly what a tool ran on
-8. keep input-specific details out of the parent key unless you later
-   prove they are universally part of the same grain
+8. keep input-specific details out of the parent key unless you later prove
+   they are universally part of the same grain
 
 That gives you a normalized model without overfitting the shared parent key.
 
@@ -739,14 +741,3 @@ view later that joins:
 
 That can make downstream querying simpler without changing the normalized
 storage model.
-
-This is the pragmatic choice:
-
-- fewer tables
-- easy to understand
-- good enough as long as one stats row can be described by one logical input
-  type
-
-The tradeoff is that the database does not explicitly model that, for example,
-`trimPair` consists of `trimR1` plus `trimR2`. That relationship is implicit
-in the lookup values rather than normalized into separate tables.
