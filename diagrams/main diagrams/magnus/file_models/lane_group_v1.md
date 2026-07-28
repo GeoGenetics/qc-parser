@@ -2,6 +2,20 @@ NOTE:
  1. An executor of a tool can either be a binf pipeline or sequencing pipeline. Binf pipeline has its own table because it has specific fields defining it. Seq pipeline does not as far as I am aware.
  2. A lane group is simply a helper table. A lane group is defined as a group of lanes. A group of lanes can consist of 1 or many lanes. The lane grouping table defines which lanes are part of which group. This makes it possible for a statfile to refer to single lanes (single lane files) and multiple lanes (merged files).
 ```mermaid
+---
+config:
+  layout: elk
+  er:
+    layoutDirection: LR
+    nodeSpacing: 190
+    rankSpacing: 130
+    entityPadding: 9
+    minEntityWidth: 80
+    minEntityHeight: 50
+    fontSize: 11
+    diagramPadding: 20
+    useMaxWidth: false
+---
 erDiagram
     PIPELINE_VERSION ||--|{ PIPELINE : ""
     PIPELINE_CONFIG ||--|{ PIPELINE : ""

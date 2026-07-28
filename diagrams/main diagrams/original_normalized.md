@@ -257,6 +257,20 @@ UNIQUE (adapter_removal_settings_id, length)
 ## 5. Mermaid sketch
 
 ```mermaid
+---
+config:
+  layout: elk
+  er:
+    layoutDirection: LR
+    nodeSpacing: 190
+    rankSpacing: 130
+    entityPadding: 9
+    minEntityWidth: 80
+    minEntityHeight: 50
+    fontSize: 11
+    diagramPadding: 20
+    useMaxWidth: false
+---
 erDiagram
     LIBID {
         bigint libid_id PK
