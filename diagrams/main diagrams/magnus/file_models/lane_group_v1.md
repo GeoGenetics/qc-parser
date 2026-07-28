@@ -16,7 +16,7 @@ erDiagram
     LIBRARY ||--o{ FILE : ""
     POOL_LIBRARY_MAPPING ||--|| XIHAN : ""
     FILE }|--|| LANE_GROUP : ""
-    LANE }|--o| FC : ""
+    LANE }|--|| FLOWCELL : ""
     LANE }|--|| POOL : ""
     
     LIBRARY {
@@ -24,16 +24,15 @@ erDiagram
         text lv UK
     }
 
-    FC {
-        int fc_id PK
-        text fc UK
+    FLOWCELL {
+        int flowcell_id PK
+        text flowcell_label UK
     }
 
 
     POOL {
         int pool_id PK
         text pool_label UK
-        int lane_id FK
     }
 
     POOL_LIBRARY_MAPPING {
@@ -55,13 +54,13 @@ erDiagram
 
     PIPELINE {
         int executor_id PK, FK
-        int config_id
-        int version_id
+        int config_id FK
+        int pv_id FK
     }
 
     EXECUTOR {
         int executor_id PK
-        int executor_name "binf_pipeline OR demux"
+        string executor_name "binf_pipeline OR demux"
     }
 
     TOOL {
@@ -79,10 +78,10 @@ erDiagram
 
     FILE {
         int file_id PK
-        int library_id FK
+        int lv_id FK
         int lane_group_id FK
         string read_type "R1, R2, collapsed, singleton"  
-        string execution_id FK 
+        int execution_id FK
     }
 
     LANE_GROUP {
@@ -128,4 +127,3 @@ It needs a way to identify which tool created which stat? derep/seqkit, merge_la
 It could work now but is not flexible and I expect that small changes in the system might result in a full redesign of the data model. One easy fix might be to just make the stats section more general. Also it relies on the system to be very standardized. Small edge cases might break it. For example: Lane 1 file is discarded or R1 is discarded and not used downstream.
 
 In other words, it could work if we dont care about which exact file was produced from which exact files by which exact operation.
-

@@ -19,8 +19,8 @@ erDiagram
     PIPELINE ||--|{ TOOL_EXECUTION : ""
     TOOL_EXECUTION o|--|{ FILE_PROCESSING : ""
     PIPELINE_TOOL ||--|{ TOOL_EXECUTION : ""
-    FILE_PROCESSING  }|--|| RESULT_FILE : ""
-    FILE_PROCESSING  }|--|| RESULT_FILE : ""
+    RESULT_FILE ||--o{ FILE_PROCESSING : "input to"
+    RESULT_FILE ||--o{ FILE_PROCESSING : "output of"
     RESULT_FILE_TYPE ||--|{ RESULT_FILE : ""
     FILE ||--|| RESULT_FILE : ""
     STATS_FILE ||--|| FILE : ""
@@ -66,8 +66,8 @@ erDiagram
     }
 
     LIBRARY_POOLING {
-        string library_id PK
-        string pool_id PK
+        string library_id PK, FK
+        string pool_id PK, FK
     }
 
     CONFIG { 
@@ -97,13 +97,14 @@ erDiagram
 
     TOOL_EXECUTION {
         string tool PK, FK
-        string pipeline PK, FK
+        string pipeline_version PK, FK
+        string config_hash PK, FK
         int process_id UK, FK
     }
 
     STATS_FILE {
         int file_id PK, FK
-        string file_processing FK
+        int process_id FK
     }
 
     FILE {
