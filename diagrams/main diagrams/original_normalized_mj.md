@@ -1,3 +1,18 @@
+```mermaid
+---
+config:
+  layout: elk
+  er:
+    layoutDirection: LR
+    nodeSpacing: 190
+    rankSpacing: 130
+    entityPadding: 9
+    minEntityWidth: 80
+    minEntityHeight: 50
+    fontSize: 11
+    diagramPadding: 20
+    useMaxWidth: false
+---
 erDiagram
     LIBID {
         bigint libid_id PK
@@ -137,4 +152,4 @@ erDiagram
     INPUT_TYPE ||--o{ DEREP_RUN : run_on
 
     FASTQC_STATS ||--o{ FASTQC_MODULE_STATUS : has
-
+```
