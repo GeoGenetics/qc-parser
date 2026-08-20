@@ -14,7 +14,7 @@ erDiagram
         bigint sample_id PK
         text sample_identifier UK
         bigint sample_type_id FK
-        bigint current_storage_slot_id FK
+        bigint current_storage_slot_id FK, UK
 
         decimal mass_g
         decimal volume_ml
@@ -23,9 +23,8 @@ erDiagram
 
         text status
         text notes
-        timestamp created_at
-        text created_by
-        timestamp updated_at
+        timestamp sampled_at
+        text sample_contact_id
     }
 
     SAMPLE_TYPE {
@@ -73,10 +72,10 @@ erDiagram
 
     SAMPLE_DEPTH {
         bigint sample_depth_id PK
-        bigint sample_id FK
+        bigint sample_id FK 
 
-        decimal depth_min
-        decimal depth_max
+        decimal depth_min 
+        decimal depth_max 
         text depth_unit
         text depth_reference
         text depth_method
@@ -88,10 +87,10 @@ erDiagram
 
     SAMPLE_AGE_ESTIMATE {
         bigint age_estimate_id PK
-        bigint sample_id FK
-        bigint age_method_id FK
+        bigint sample_id FK 
+        bigint age_metho FK 
 
-        decimal age_min
+        decimal age_min 
         decimal age_max
         text age_unit
         text age_reference
@@ -99,15 +98,13 @@ erDiagram
         decimal uncertainty
         decimal confidence_level
 
-        timestamp estimated_at
+        timestamp estimated_at 
         text estimated_by
         text notes
     }
 
     AGE_ESTIMATION_METHOD {
-        bigint age_method_id PK
-        text method_code UK
-        text method_name
+        text method_name PK
         text description
     }
 
@@ -148,3 +145,4 @@ erDiagram
     STORAGE_SLOT ||--o{ STORAGE_SLOT : contains
     STORAGE_SLOT ||--o{ SAMPLE : stores
 ```
+

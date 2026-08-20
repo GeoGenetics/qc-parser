@@ -1,5 +1,15 @@
 ```mermaid
+---
+config:
+  layout: elk
+  er:
+    layoutDirection: LR
+    entityPadding: 8
+    diagramPadding: 15
+    useMaxWidth: false
+---
 erDiagram
+
     FIELD_SAMPLE {
     }
 

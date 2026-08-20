@@ -105,7 +105,6 @@ erDiagram
         text relationship_type
     }
 
-
     STORAGE_LOCATION {
         bigint storage_location_id PK
         bigint parent_location_id FK

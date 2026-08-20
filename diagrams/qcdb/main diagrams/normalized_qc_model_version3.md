@@ -749,3 +749,54 @@ erDiagram
         double_precision length_midpoint
     }
 ```
+
+# NF assesment
+1NF
+Does every column contain one value of one type? Yes
+Are lists, arrays, comma-separated values, or repeating columns such as mineral_1, mineral_2 being used? no
+Would any part of a stored value need to be queried or constrained independently? no
+Does every row have a stable candidate key? yes
+Conclusion: 1NF obtained
+
+2NF
+
+Is 1NF obtained: Yes
+For every non-key attribute:
+Does it depend on the whole of every candidate key? No: Lane_scope does not depend on pipeline_id, flowcell_id or libid. index_id does not depend on lane or seqrun_id. 
+If the key is composite, does an attribute depend on only one part of it? Yes. see above.
+Is the table mixing facts about the association with facts about one participating entity? not sure
+Would updating one row require updating multiple rows? Yes lane.
+Does all values in the table need to be inserted at the same time? 
+Conclusion: 2NF not obtained.
+
+General Eexample: in (sample_id, analysis_type_id, analysis_date), analysis_type_name depends only on analysis_type_id and belongs elsewhere.
+
+3NF
+Is 2NF obtained: No
+Does every non-key attribute depend directly on a candidate key? No. See above. There are no inderect dependencies tho.
+Does one non-key attribute determine another? Flowcell type might determine which layout types are possible.
+Would changing one fact require updating several rows? Changing lane in qc run requires changins lane in seq stats. Libid in seq stats and qc run.
+Can you record one fact without inventing or supplying an unrelated fact? No. Qc run must have a lane. A lane cannot be created alone. 
+Does deleting one fact accidentally removes another? yes
+Are descriptive attributes of referenced entities duplicated? yes
+Conclusion: 3NF not obtained.
+
+4NF
+Is 3NF obtained: no
+Does one entity have two or more independent collections of facts? yes
+Are all combinations of those collections being stored? yes 
+Would adding an item to one collection require repeating every item in another?
+For every nontrivial multivalued dependency X →→ Y, is X a superkey?
+Conclusion: 4NF not obtained
+
+For example, if samples can independently have many photographs and many tags, avoid one table containing (sample_id, photograph_id, tag_id). Use separate sample–photograph and sample–tag tables.
+
+5NF
+is 4nf obtained: no
+Does the table represent an association among three or more entities? yes
+Can it be decomposed into smaller association tables and reconstructed with a lossless join? 
+Would that decomposition generate any combinations that are not actually valid? 
+Are valid full combinations completely determined by valid lower-order combinations?
+Is there a constraint saying, in effect: “a triple exists exactly when all its relevant pairs exist”?
+For every nontrivial join dependency, is that dependency implied by candidate keys?
+Conclusion: 5nf not obtained.
