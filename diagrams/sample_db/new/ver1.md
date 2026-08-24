@@ -1,12 +1,16 @@
+
 ```mermaid
 ---
 config:
+  theme: base
   layout: elk
+  elk:
+    considerModelOrder: NODES_AND_EDGES
+    forceNodeModelOrder: false
   er:
     layoutDirection: LR
-    entityPadding: 8
-    diagramPadding: 15
-    useMaxWidth: false
+    nodeSpacing: 80
+    rankSpacing: 150
 ---
 erDiagram
 

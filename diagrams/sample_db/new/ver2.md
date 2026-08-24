@@ -1,3 +1,4 @@
+
 ```mermaid
 ---
 config:
@@ -8,141 +9,204 @@ config:
     diagramPadding: 15
     useMaxWidth: false
 ---
+
+
 erDiagram
-
+  
     SAMPLE {
-        bigint sample_id PK
-        text sample_identifier UK
-        bigint sample_type_id FK
-        bigint current_storage_slot_id FK, UK
-
+        int sample_id PK
+        text sample_label UK
+        int storage_location_id FK, UK
         decimal mass_g
-        decimal volume_ml
-        text material_code
-        text medium_code
-
-        text status
-        text notes
-        timestamp sampled_at
-        text sample_contact_id
+        text description
+        date sampled_at
+        text sampling_method
+        text taxonomy 
+        JSON misc_measurements 
+        int event_id FK
+        text sample_type "negative control | positive control | true sample"  
+        int sampling_responsible_id FK
+        int sample_contact_id FK
+        int sampling_institution_id FK
+        text other_sampling_process_details
+        text other_sample_details
+        text set_name FK
+        text sample_container
+        text acquisition_type 
+        json other_values
+        text created_from "field_sampling | edna_extraction | sub sampling"
+        text data_quality_comments
+        text other_comments
+        int data_filler FK 
+        uuid batch_upload_id FK
     }
 
-    SAMPLE_TYPE {
-        bigint sample_type_id PK
-        text sample_type_code UK
-        text description
+    UPLOAD_BATCH {
+        int uploader_id FK
+        int receipt_sent_to FK
+        int data_filler FK
+        timestamp uploaded_at
+        uuid upload_batch_id PK
+        text upload_template_version 
+        text upload_file_path
+    }
+
+    SAMPLE_SET {
+        text set_name PK
+        text set_parent_name PK, FK
+        bool is_leaf 
+    }
+
+    SUB_SAMPLE {
+        text biggest_format_in_storage
     }
 
     FIELD_SAMPLE {
-        bigint sample_id PK, FK
-        bigint site_id FK
-
-        decimal latitude
-        decimal longitude
-        decimal elevation_m
-
-        timestamp collected_at
-        text collected_by
-        text sampling_method
+        int sample_id PK, FK
+        int sampling_location_id FK
+        int field_trip_id FK
+        text present_day_environmental_context_id FK
+        text environmental_medium_id FK
+        text environmental_medium_details 
+        text sampling_context_description
     }
 
-    WETLAB_SAMPLE {
-        bigint sample_id PK, FK
-
-        text preparation_method
-        text preparation_protocol
-        timestamp prepared_at
-        text prepared_by
+    DEPTH_MEASUREMENT {
+        int sample_id PK, FK 
+        decimal depth PK
+        text depth_method 
+        text depth_reference PK
     }
 
-    DNA_SAMPLE {
-        bigint sample_id PK, FK
-
-        decimal dna_concentration
-        text concentration_unit
-        text extraction_method
-        text extraction_protocol
+    AGE_ESTIMATE {
+        int age_estimate_id PK
+        int sample_id FK 
+        int age_method FK 
+        decimal age
+        date estimated_at
+        text contact_person FK
     }
 
-    SITE {
-        bigint site_id PK
-        text site_name UK
-        text country_region
-    }
-
-    SAMPLE_DEPTH {
-        bigint sample_depth_id PK
-        bigint sample_id FK 
-
-        decimal depth_min 
-        decimal depth_max 
-        text depth_unit
-        text depth_reference
-        text depth_method
-
-        timestamp recorded_at
-        text recorded_by
-        text notes
-    }
-
-    SAMPLE_AGE_ESTIMATE {
-        bigint age_estimate_id PK
-        bigint sample_id FK 
-        bigint age_metho FK 
-
-        decimal age_min 
-        decimal age_max
-        text age_unit
-        text age_reference
-
-        decimal uncertainty
-        decimal confidence_level
-
-        timestamp estimated_at 
-        text estimated_by
-        text notes
-    }
-
-    AGE_ESTIMATION_METHOD {
-        text method_name PK
-        text description
-    }
-
-    
-    SAMPLE_RELATIONSHIP {
+    SAMPLE_PROVENANCE {
         int source_sample_id PK,FK
         int derived_sample_id PK,FK
         text relationship_type
     }
- 
 
-    STORAGE_SLOT {
-        bigint storage_slot_id PK
-        bigint parent_storage_slot_id FK
-
-        text slot_type
-        text slot_code
-        text slot_name
-        boolean active
+    STORAGE_LOCATION {
+        ing location_parent FK, PK
+        text location_name PK "e.g. Øster voldgade 5"
+        text location_type "address, room, building, rack etc."
+        text other_storage_details
     }
 
-    SAMPLE_TYPE ||--o{ SAMPLE : classifies
+    SAMPLING_LOCATION {
+        decimal latitude PK
+        decimal longitude PK
+        int elevation PK
+        text elevation_inference_method 
+        text coordinates_inference_method
+        text water_depth
+        text archaeological_site_registry  
+        JSON misc_measurements
+        text feature_class
+    }
 
-    SAMPLE ||--o| FIELD_SAMPLE : "may be"
-    SAMPLE ||--o| WETLAB_SAMPLE : "may be"
-    WETLAB_SAMPLE ||--o| DNA_SAMPLE : "may be"
+    PROJECT {
+        int project_id PK
+        text project_name "aegis, rice, kapk"
+        text project_type "field_project, sequencing_project"
+        int principal_investigator_id FK
+    }
 
-    SITE ||--o{ FIELD_SAMPLE : "collection site"
+    ENVIRONMENT {
+        int envo_id PK
+        int envo_parent_id FK
+        text name
+    }
+    
+    PERSON {
+        email email PK
+        text full_name 
+    }
 
-    SAMPLE ||--o{ SAMPLE_DEPTH : "has depth records"
+    MEDIUM {
+        int envo_id PK
+        int envo_parent_id FK
+        text name
+    }
 
-    SAMPLE ||--o{ SAMPLE_AGE_ESTIMATE : "has age estimates"
-    AGE_ESTIMATION_METHOD ||--o{ SAMPLE_AGE_ESTIMATE : uses
+    GEOGRAPHICAL_LOCATION_TAGS {
+        text location_name PK "e.g. Kap K"
+        text location_type PK "site, region, province, unknown, country"
+        int sampling_location_id PK, FK
+        text description
+    }
 
-    SAMPLE ||--o{ SAMPLE_RELATIONSHIP : ""
-    SAMPLE ||--o{ SAMPLE_RELATIONSHIP : ""
+    FIELD_TRIP {
+        text field_trip_name 
+        int geo_location_tag_id FK, PK
+        date start_date PK
+        date end_date
+    }
 
-    STORAGE_SLOT ||--o{ STORAGE_SLOT : contains
-    STORAGE_SLOT ||--o{ SAMPLE : stores
+    SAMPLE ||--o| FIELD_SAMPLE : ""
+    FIELD_SAMPLE ||--o{ DEPTH_MEASUREMENT : ""
+
+    SAMPLE ||--o{ AGE_ESTIMATE : ""
+    SAMPLE_SET ||--|{ SAMPLE : ""
+    
+    SAMPLE }|--|| PROJECT : "" 
+    PROJECT ||--o{ PROJECT : "has subproject"
+
+    SAMPLE ||--o{ SAMPLE_PROVENANCE : ""
+    SAMPLE ||--o{ SAMPLE_PROVENANCE : ""
+
+    STORAGE_LOCATION ||--|{ SAMPLE : ""
+    STORAGE_LOCATION ||--|{ STORAGE_LOCATION : "has sub-storage location"
+
+    FIELD_TRIP ||--|{ FIELD_SAMPLE : ""
+
+    SAMPLE_ALIASES }o--|| SAMPLE : ""
+    SAMPLING_LOCATION ||--|{ FIELD_SAMPLE : ""
+    GEOGRAPHICAL_LOCATION_TAGS ||--|{ FIELD_TRIP : ""
+    FIELD_SAMPLE ||--|| ENVIRONMENT : ""
+    FIELD_SAMPLE ||--|| MEDIUM : ""
+    FIELD_SAMPLE }|--|{ DEPOSITIONAL_ENVIRONMENT: ""
+
+    SAMPLE ||--|| SUB_SAMPLE : ""
+
+    GEOGRAPHICAL_LOCATION_TAGS }|--|| SAMPLING_LOCATION : ""
+    FIELD_TRIP }|--|{ PERSON : ""
+    PERSON ||--|{ AGE_ESTIMATE : "" 
+    PERSON }|--|{ SAMPLE : "is contact person for" 
+    PERSON ||--|{ SAMPLE : "is responsible for" 
+
+    RAW_TEMPLATE_RECORD ||--|| SAMPLE : "" 
+
+
+    PERSON }|--|{ ORGANIZATION : "affilation"
+    ORGANIZATION ||--|{ SAMPLE : ""
+    ORGANIZATION ||--|{ ORGANIZATION : "has sub-organization"
+    UPLOAD_BATCH ||--|{ SAMPLE : ""
+    UPLOAD_BATCH }|--|| PERSON : ""
+
+    
 ```
 
+NOTE: 
+1. A master sample is defined as a physical sample that has been split into many segments.
+2. We might need a single column in the field sample template for geo location classification which will include all names or identifiers of the location from least local to most local? Example Africa: North Africa: Egypt: Giza: Giza Necropolis: The Great Pyramid of Giza: Area B: Trench 5: Locus 102: Layer 4 
+3. Data responsible or template filler or both?
+4. Use email as unique person id
+
+
+NEEDS CLARIFICATION:
+1. Can all samples get age estimates?
+2. Can a sub project be part of many master projects?
+3. Rename SAMPLING_LOCATION to SAMPLE_ORIGIN?
+4. Move water_depth? To a sampling context?
+5. How to get information about the responsible instittion/organisation i.e. who the sampling responsible is taking the sample on behalf of?
+6. How to define a field trip? How to make sure the field trip attributes are provided?
+7. Should it be allowed for a sampling location to have more than 1 environment?
+8. Where should principal investigator be an attribute?
