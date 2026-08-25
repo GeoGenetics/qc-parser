@@ -37,8 +37,9 @@ erDiagram
         text created_from "field_sampling | edna_extraction | sub sampling"
         text data_quality_comments
         text other_comments
-        int data_filler FK 
+        int data_filler FK
         uuid batch_upload_id FK
+        bool has_material 
     }
 
     UPLOAD_BATCH {
@@ -49,23 +50,28 @@ erDiagram
         uuid upload_batch_id PK
         text upload_template_version 
         text upload_file_path
+        text upload_comment
     }
 
     SAMPLE_SET {
-        text set_name PK
-        text set_parent_name PK, FK
+        text set_name PK "e.g. IcelandLakeCores24"
+        text set_parent_name PK, FK "e.g. IcelandLakeCores"
         bool is_leaf 
     }
 
-    SUB_SAMPLE {
+    SUB_FIELD_SAMPLE {
+        int sample_id PK, FK
         text biggest_format_in_storage
+        text organic_content
+        text surface_exposed
     }
 
-    FIELD_SAMPLE {
+
+    ORIGINAL_FIELD_SAMPLE {
         int sample_id PK, FK
         int sampling_location_id FK
         int field_trip_id FK
-        text present_day_environmental_context_id FK
+        text present_day_environmental_context_id 
         text environmental_medium_id FK
         text environmental_medium_details 
         text sampling_context_description
@@ -87,15 +93,18 @@ erDiagram
         text contact_person FK
     }
 
-    SAMPLE_PROVENANCE {
+    SUB_SAMPLING {
         int source_sample_id PK,FK
         int derived_sample_id PK,FK
-        text relationship_type
+        text sub_sampling_order_id FK
+        text sub_sampling_order_remarks
+        text type "composite | non-rep subsam | rep subsam "
     }
 
     STORAGE_LOCATION {
         ing location_parent FK, PK
         text location_name PK "e.g. Øster voldgade 5"
+        text location_barcode PK "e.g. LVL500291685"
         text location_type "address, room, building, rack etc."
         text other_storage_details
     }
@@ -122,12 +131,15 @@ erDiagram
     ENVIRONMENT {
         int envo_id PK
         int envo_parent_id FK
-        text name
+        text name 
     }
     
     PERSON {
         email email PK
-        text full_name 
+        text full_name UK 
+        text ku_id UK
+        text initials UK
+        bool is_principal_investigator
     }
 
     MEDIUM {
@@ -150,31 +162,79 @@ erDiagram
         date end_date
     }
 
-    SAMPLE ||--o| FIELD_SAMPLE : ""
-    FIELD_SAMPLE ||--o{ DEPTH_MEASUREMENT : ""
+    DNA_SAMPLE {
+        int sample_id PK, FK
+        int volumne_ul
+        text dna_sample_type "e.g. lysate | clean | library"
+    }
+
+    LIBRARY {
+        int sample_id PK, FK
+        int ct
+        date qpcr_performed_at
+        date indexing_pcr_performed_at
+        int index_number
+        date cleanup_performed_at
+        date start_at
+        decimal concentration_nm
+        int library_peak
+        date qc_performed_at
+        text qc_result
+        decimal proportion_in_pool
+        bool stop_pool
+        decimal dna_pooled
+        int expected_sequencing_data_size_mb
+
+    }
+
+    CLEAN_DNA_SAMPLE {
+        int sample_id PK, FK
+        decimal total_dna_concentration_ng_ul
+        int short_dna_concentration_ng_ul
+        text binding_buffer
+    }
+
+    ORDER {
+        int order_id PK
+        int customer FK
+        date order_date
+        text order_type
+    }
+
+    SERVICE {
+        text service_name "e.g. sub-sampling, dna extraction, library prep, pooling, sequencing"
+    }
+
+    SAMPLE ||--o| ORIGINAL_FIELD_SAMPLE : ""
+    SAMPLE ||--o{ DEPTH_MEASUREMENT : ""
 
     SAMPLE ||--o{ AGE_ESTIMATE : ""
-    SAMPLE_SET ||--|{ SAMPLE : ""
+    SAMPLE_SET ||--|{ ORIGINAL_FIELD_SAMPLE : ""
+    SAMPLE_SET ||--|{ SAMPLE_SET : ""
+    SUB_SAMPLING }|--|| ORDER : ""
+    SERVICE }|--|{ ORDER : ""
+    PERSON ||--o{ ORDER : ""
     
     SAMPLE }|--|| PROJECT : "" 
     PROJECT ||--o{ PROJECT : "has subproject"
 
-    SAMPLE ||--o{ SAMPLE_PROVENANCE : ""
-    SAMPLE ||--o{ SAMPLE_PROVENANCE : ""
+    SAMPLE ||--o{ SUB_SAMPLING : ""
+    SAMPLE ||--o{ SUB_SAMPLING : ""
+    SAMPLE ||--|| DNA_SAMPLE : ""
+    DNA_SAMPLE ||--o| CLEAN_DNA_SAMPLE : ""
+    DNA_SAMPLE ||--o| LIBRARY : ""
 
     STORAGE_LOCATION ||--|{ SAMPLE : ""
     STORAGE_LOCATION ||--|{ STORAGE_LOCATION : "has sub-storage location"
 
-    FIELD_TRIP ||--|{ FIELD_SAMPLE : ""
+    FIELD_TRIP ||--|{ ORIGINAL_FIELD_SAMPLE : ""
 
     SAMPLE_ALIASES }o--|| SAMPLE : ""
-    SAMPLING_LOCATION ||--|{ FIELD_SAMPLE : ""
+    SAMPLING_LOCATION ||--|{ ORIGINAL_FIELD_SAMPLE : ""
     GEOGRAPHICAL_LOCATION_TAGS ||--|{ FIELD_TRIP : ""
-    FIELD_SAMPLE ||--|| ENVIRONMENT : ""
-    FIELD_SAMPLE ||--|| MEDIUM : ""
-    FIELD_SAMPLE }|--|{ DEPOSITIONAL_ENVIRONMENT: ""
-
-    SAMPLE ||--|| SUB_SAMPLE : ""
+    ORIGINAL_FIELD_SAMPLE ||--|| ENVIRONMENT : ""
+    ORIGINAL_FIELD_SAMPLE ||--|| MEDIUM : ""
+    ORIGINAL_FIELD_SAMPLE }|--|{ DEPOSITIONAL_ENVIRONMENT: ""
 
     GEOGRAPHICAL_LOCATION_TAGS }|--|| SAMPLING_LOCATION : ""
     FIELD_TRIP }|--|{ PERSON : ""
@@ -184,14 +244,13 @@ erDiagram
 
     RAW_TEMPLATE_RECORD ||--|| SAMPLE : "" 
 
+    SUB_FIELD_SAMPLE |o--|| SAMPLE : "" 
 
     PERSON }|--|{ ORGANIZATION : "affilation"
     ORGANIZATION ||--|{ SAMPLE : ""
     ORGANIZATION ||--|{ ORGANIZATION : "has sub-organization"
     UPLOAD_BATCH ||--|{ SAMPLE : ""
     UPLOAD_BATCH }|--|| PERSON : ""
-
-    
 ```
 
 NOTE: 
@@ -199,6 +258,9 @@ NOTE:
 2. We might need a single column in the field sample template for geo location classification which will include all names or identifiers of the location from least local to most local? Example Africa: North Africa: Egypt: Giza: Giza Necropolis: The Great Pyramid of Giza: Area B: Trench 5: Locus 102: Layer 4 
 3. Data responsible or template filler or both?
 4. Use email as unique person id
+5. Controlled vocabs are missing.
+6. SAMPLE_SET could replace PROJECT and be a way to easily identify a set of samples by Kurt for example. Might not be needed  though.
+7. The difference between an ORDER and a SAMPLE_SET is that a sample might be part of many orders but only part of 1 sample set. 
 
 
 NEEDS CLARIFICATION:
@@ -210,3 +272,13 @@ NEEDS CLARIFICATION:
 6. How to define a field trip? How to make sure the field trip attributes are provided?
 7. Should it be allowed for a sampling location to have more than 1 environment?
 8. Where should principal investigator be an attribute?
+9. What is archive sample number?
+10. How to log updates, inserts and deletions? 
+11. How to get archive sample storage info?
+12. Does archive_sample_material_left indicate parent material left or archive material left?
+13. what is archive sample serial_id?
+14. Could the number of person columns be reduced?
+15. What is wet_lab_no in wetlab report?
+16. What is the cardinality between DNA_LYSATE and DNA_CLEAN and how to track provenance?
+17. Do library dates relate to other dna samples?
+18. What is Pool and what is library data?
